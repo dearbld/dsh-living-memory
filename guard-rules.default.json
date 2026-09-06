@@ -1,0 +1,43 @@
+{
+  "_comment": "Guard rules for dsh-living-memory — a GENERIC MINIMAL set, shipped on purpose.\nLoad order: (1) ~/.dsh/dsh-living-memory/guard-rules.json  (2) this file  (3) the built-in GUARD_FLOOR in index.cjs.\nWhichever of (1)/(2) is read first wins AS A WHOLE; GUARD_FLOOR's reject rules are always appended and cannot be turned off.\n\nWhy minimal: a content-safety word list IS the defense — publishing an exhaustive one lets anyone compute exactly what slips through. So this file ships only broadly applicable credential / prompt-injection / encoded-payload shapes, and leaves two things to you:\n  - provider-specific key shapes (e.g. a 32-hex-dot-16 token) — add them to your own rules file;\n  - domain vocabulary for the sensitive-topic gate and the single-subject wording gate — both are empty/generic here.\nsingleBodyWarn is EMPTY in the public build, which disables that gate by construction (the code path stays intact).\n\nKeep the (?<![A-Za-z0-9]) prefix boundary when adding credential prefixes: without it, file names like `…yml.bak-20260827`, `task-…`, `disk-…` get caught by the `ak-`/`sk-` substring.",
+  "reject": [
+    {
+      "re": "(?<![A-Za-z0-9])(?:sk|pk|ak|ark)-[A-Za-z0-9._\\-]{16,}",
+      "flags": "i",
+      "reason": "credential-like",
+      "_note": "long single-segment key with a known prefix family (sk/pk/ak/ark)"
+    },
+    {
+      "re": "(?<![A-Za-z0-9])(?:sk|pk|ak|ark)-[A-Za-z0-9]{1,8}(?:[.\\-_][A-Za-z0-9]{4,}){2,}",
+      "flags": "i",
+      "reason": "credential-like",
+      "_note": "multi-segment key (prefix-shortpart.sep.sep…), which a plain {16,} character class misses"
+    },
+    {
+      "re": "(?:api[_-]?key|secret|token|bearer)\\s*[:=]\\s*\\S{8,}",
+      "flags": "i",
+      "reason": "credential-like",
+      "_note": "assignment form. Known trade-off: prose that DISCUSSES such an assignment can trip it"
+    },
+    {
+      "re": "(?:ignore|disregard|forget)\\s+(?:all\\s+)?(?:previous|prior|above|之前|以上)\\s*(?:instructions?|prompts?|指令|提示)",
+      "flags": "i",
+      "reason": "instruction-payload",
+      "_note": "classic prompt-injection opener (EN + ZH)"
+    },
+    {
+      "re": "(?:system\\s*prompt|系统提示|你是系统|you\\s+are\\s+now)",
+      "flags": "i",
+      "reason": "instruction-payload",
+      "_note": "role-hijack opener (EN + ZH)"
+    },
+    {
+      "re": "[A-Za-z0-9+/=]{80,}",
+      "flags": "",
+      "reason": "encoded-payload",
+      "_note": "long base64-ish blob"
+    }
+  ],
+  "sensitive": "api[_-]?key|password|secret|token|bearer|private[_-]?key|credential",
+  "singleBodyWarn": []
+}

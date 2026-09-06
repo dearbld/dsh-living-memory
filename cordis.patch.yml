@@ -1,0 +1,22 @@
+# dsh-living-memory — bundle patch layer.
+#
+# Profile-bundle patches compose over an EMPTY entry list (launcher
+# composition), so this patch is an `insert` appending composition rows.
+# Two rows register the same plugin twice by design:
+#   - living-memory        role: host  → read tools (search / timeline / stats /
+#                          read_episodic / read_evolution) + internal pipelines
+#                          (nightly patrol, extraction, prompt injection, panels)
+#   - living-memory-write  role: write → the memory_write tool
+# Install and go: both rows ship in the bundle, so `dsh plugin add
+# dsh-living-memory` yields a full-featured memory system with zero config.
+# To restrict write access to selected agent presets, remove the
+# living-memory-write row here and add it to those presets' agent.cordis.yml.
+- insert:
+    - id: living-memory
+      name: dsh-living-memory
+      config:
+        role: host
+    - id: living-memory-write
+      name: dsh-living-memory
+      config:
+        role: write

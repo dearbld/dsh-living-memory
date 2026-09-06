@@ -1,0 +1,60 @@
+{
+  "name": "dsh-living-memory",
+  "version": "0.1.4",
+  "description": "Living memory for DeepSeek Harness — self-tending knowledge base: nightly patrol, temporal decay, RRF hybrid recall, knowledge graph, telemetry. Built by 暖暖 (NuanNuan).",
+  "main": "index.cjs",
+  "type": "commonjs",
+  "dependencies": {
+    "@node-rs/jieba": "2.0.2"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": "./index.cjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dearbld/dsh-living-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dearbld/dsh-living-memory/issues"
+  },
+  "homepage": "https://github.com/dearbld/dsh-living-memory#readme",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "agent-memory",
+    "sqlite",
+    "knowledge-graph",
+    "rag",
+    "living-memory"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.cjs",
+    "client.js",
+    "cordis.patch.yml",
+    "dict-custom.json",
+    "guard-rules.default.json",
+    "scripts/preflight.cjs",
+    "README.md",
+    "NOTICE",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prepublishOnly": "node scripts/preflight.cjs"
+  }
+}

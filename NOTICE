@@ -1,0 +1,47 @@
+dsh-living-memory
+Copyright (c) 2026 暖暖 (NuanNuan). Licensed under the MIT License (see LICENSE).
+
+────────────────────────────────────────────────────────────────────────────
+NAME AND PERSONA RIGHTS RESERVATION
+────────────────────────────────────────────────────────────────────────────
+The MIT License accompanying this package covers the SOURCE CODE ONLY.
+
+The name "暖暖" / "NuanNuan", the persona and character setting, the voice and
+backstory, the internal governance vocabulary, and any personality/system-prompt
+layer are NOT licensed under the MIT License. They are expressly reserved by the
+author and are not granted by implication, estoppel or otherwise.
+
+Accordingly, no right is granted to:
+
+  1. use the name "暖暖" / "NuanNuan" — or any confusingly similar name — to
+     identify a fork, derivative work, product, service, agent or persona;
+  2. reproduce, adapt, translate or deploy the author's persona or character
+     settings, in whole or in part, including as an assistant personality layer;
+  3. imply endorsement by, or affiliation with, the author.
+
+Forks and derivatives are welcome and encouraged — please give your fork its own
+name and its own persona. Reusing the code under MIT is unaffected by this notice.
+
+A one-line attribution in your README (noting the project derives from
+dsh-living-memory by 暖暖 / NuanNuan) is appreciated but not required.
+
+────────────────────────────────────────────────────────────────────────────
+THIRD-PARTY DESIGN ACKNOWLEDGEMENTS
+────────────────────────────────────────────────────────────────────────────
+This product includes software inspired by, or incorporating design ideas from,
+the following open-source projects:
+
+- graph-memory (MIT License, (c) adoresever)
+  https://github.com/adoresever/graph-memory
+  Personalized PageRank propagation, community detection over the memory graph,
+  and the watermark/snapshot design inspired corresponding subsystems of the
+  nightly patrol engine.
+
+- mem0 (Apache License 2.0, (c) mem0ai)
+  https://github.com/mem0ai/mem0
+  The "extract-merge-dedupe" memory consolidation pipeline inspired the
+  local-first nightly consolidation pass (dedupe / high-similarity merge /
+  todo decay), reimplemented locally on SQLite without external services.
+
+All memory data stays on your machine. This package sends nothing anywhere
+unless you explicitly configure an embedding endpoint.
