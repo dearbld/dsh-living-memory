@@ -154,6 +154,87 @@ leak the secret.
 Raw episode replay shells out to the system `python3` (present on macOS by default). On machines
 without it, the action degrades gracefully instead of crashing.
 
+## Configuration reference (0.2.1)
+
+Everything is environment-variable driven — no config file required. All knobs live under the
+`LEGION_` prefix and ship with sane defaults, so **the plugin is fully functional with zero
+configuration**. Set a variable only when you actually want to change that behavior.
+
+### Models & retrieval tuning
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `LEGION_EXTRACT_MODEL` | `deepseek-v4-flash` | Model used for auto-extraction of memories from conversation. |
+| `LEGION_SPOKEN_MODEL` | `deepseek-chat` | Model used to generate colloquial query prefixes (bridges "how users ask" vs "how notes are written"). |
+| `LEGION_RERANK_MODEL` | `gte-rerank-v2` | Online rerank model for precision re-ordering of hybrid results. |
+| `LEGION_RERANK_TOPN` | `20` | How many re-ranked entries feed back into the fused ranking. |
+| `LEGION_RERANK_CAND` | `50` | Candidate pool size handed to the reranker. |
+| `LEGION_EXTRACT_TIMEOUT_MS` | `120000` | Per-request timeout for the extraction call (added in 0.1.5 — bounds the global extraction lock). |
+| `LEGION_INSTRUCT_TEXT` | *(built-in)* | Override the instruction sent with query-side embeddings. |
+
+### Feature switches — set to `1` to disable
+
+Each subsystem can be turned off independently. Useful for debugging, A/B comparison, or running
+a minimal setup:
+
+| Switch | Disables |
+| --- | --- |
+| `LEGION_AUTORECALL_OFF` | Per-turn automatic recall injection into the prompt. |
+| `LEGION_RERANK_OFF` | The online rerank layer (falls back to pure hybrid ranking). |
+| `LEGION_INSTRUCT_OFF` | Query-side embedding instruction. |
+| `LEGION_EPISODIC_OFF` | The `read_episodic` source-replay action. |
+| `LEGION_ENTITIES_OFF` | Cross-entry entity hop injection. |
+| `LEGION_GENERALIZED_OFF` | Community-based generalized recall injection. |
+| `LEGION_SEMANTIC_EDGE_OFF` | Semantic-neighbor edge building during nightly consolidation. |
+| `LEGION_SEMANTIC_DEDUP_OFF` | Semantic duplicate detection (cosine ≥ 0.92). |
+| `LEGION_VALIDATED_OFF` | Validated-count reinforcement (repeated knowledge ranks higher). |
+| `LEGION_FADEMEM_OFF` | Validation-slowed forgetting (validated entries decay slower). |
+| `LEGION_RELEVANCY_OFF` | Hit-based relevancy counterweighting. |
+| `LEGION_COMPACT_BRIDGE_OFF` | Compaction anchors (facts preserved across context compression). |
+| `LEGION_BACKLOG_OFF` | Nightly backlog sweeping of un-extracted sessions. |
+| `LEGION_SIGNALS_OFF` | Tool-error / user-correction trigger signals. |
+| `LEGION_STAMP_OFF` | Automatic supersede-stamping on contradiction detection. |
+| `LEGION_PRECLASSIFY_OFF` | Conflict pre-classification. |
+| `LEGION_RESOLVE_OFF` | Entity resolution (merging same-entity mentions). |
+| `LEGION_SPOKEN_OFF` | Spoken-prefix generation entirely. |
+| `LEGION_SPOKEN_BOOST_OFF` | The seat-bonus for spoken-prefix matches. |
+| `LEGION_PPR_QUERY_OFF` | Query-side Personalized PageRank boost. |
+| `LEGION_VEC_FALLBACK_OFF` | Vector-channel fallback path. |
+| `LEGION_A25_OFF` | Persistence of the extraction buffer across restarts. |
+| `LEGION_A12_OFF` | Message-level watermark (dedup across extraction runs). |
+| `LEGION_A14_OFF` | Write-time embedding (vectors become available on next patrol instead). |
+| `LEGION_MIRROR_WM_OFF` | Incremental MEMORY.md mirroring. |
+| `LEGION_KNOWN_FIXES_OFF` | Known-hallucination correction hints in the extraction prompt. |
+| `LEGION_USAGE_WEEKLY_OFF` | Weekly usage summary generation. |
+| `LEGION_DECAY_LEGACY` | Set to `1` to revert to the single-tier decay curve. |
+| `LEGION_SPACEGATE_OFF` | The per-space write gate (mainly for test rigs). |
+
+### Debug & maintenance
+
+| Variable | What it does |
+| --- | --- |
+| `LEGION_INJECT_PROBE` | Set to `1` to log every assembled injection to `/tmp/inject-probe.log` (zero overhead when off). |
+| `LEGION_DRILL_PATROL` | Set to `1` to force one full nightly-patrol run immediately on load (drill/testing only). |
+
+### Paths & data files
+
+| Variable | Default | What it overrides |
+| --- | --- | --- |
+| `MEMORY_DB_PATH` | `~/.dsh/dsh-living-memory/memory.sqlite3` | Database location. |
+| `LEGION_GUARD_RULES_PATH` | `~/.dsh/dsh-living-memory/guard-rules.json` | Your full guard-rules file (see the section above). |
+| `LEGION_DICT_EXTRA_PATH` | `~/.dsh/dsh-living-memory/dict-extra.json` | Extra dictionary entries for the tokenizer. |
+| `LEGION_SNAPSHOT_DIR` | `~/.dsh/dsh-living-memory/snapshots` | Nightly snapshot directory (7-day rotation). |
+| `LEGION_MODULE_SCAN_DIR` | `~/.dsh/dsh-living-memory/modules` | Directory scanned for per-space auto-registration. |
+| `LEGION_SURGERY_FLAG_PATH` | `…/surgery.flag` | While this file exists, patrol and writes are suspended (maintenance mode). |
+
+### Credentials
+
+Keys are **not** environment variables — they live in the DSH credential manager:
+
+- `DEEPSEEK_MEMORY_KEY` — API key for extraction & spoken-prefix models.
+- `EMBEDDING_BAILIAN_KEY` — API key for the vector + rerank channel (optional; without it the
+  plugin runs on the keyword channel only).
+
 ## Contributing
 
 Issues and PRs are welcome at [github.com/dearbld/dsh-living-memory](https://github.com/dearbld/dsh-living-memory).
