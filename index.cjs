@@ -54,7 +54,8 @@ const EXTRACT_MODEL = process.env.LEGION_EXTRACT_MODEL || "deepseek-v4-flash";
 // ── issue#1 修②（design-approved
 //    防慢速响应长持 extracting 互斥锁（Undici 默认 300s×2 只是兜底·四 attempts 最坏 20 分钟）；
 //    默认 120s 下四 attempts 最坏 8 分钟封顶。超时 abort 走既有 fetch fail → skip 路径。
-const EXTRACT_TIMEOUT_MS = Number(process.env.LEGION_EXTRACT_TIMEOUT_MS) || 120000;
+const EXTRACT_TIMEOUT_MS =
+	Number(process.env.LEGION_EXTRACT_TIMEOUT_MS) || 120000;
 const SPOKEN_MODEL = process.env.LEGION_SPOKEN_MODEL || "deepseek-chat"; // 09-03 裁③（maintainer B 案）：spoken-prefix 模型独立旋钮——修「EXTRACT_MODEL 不传导」契约破洞·缺省现状零行为变·两链独立调优（质量directive按需分配）
 // ── item1：查询侧 instruct（design-approved
 //    探针实证（09-07 /tmp/probe-instruct.cjs 三臂·qwen3.7-text-embedding）：兼容模式 text_type 被
@@ -1168,6 +1169,57 @@ const GATE_STOP = new Set([
 	"生效",
 	"落盘",
 	"全绿",
+	// ── 0.2.0 首刀（issue#1 同车·09-08）：英文停用词追加——纯 ASCII 追加·中文行为零变 ──
+	//    治面：英文用户标题/证据全英文时此表空转不滤高频词，同题判定精度伤（§9.9 真功能缺陷）。
+	//    功能性高频（对齐中文段语义）+英文结构停用词双段；token 入表前已 toLowerCase。
+	"task",
+	"todo",
+	"done",
+	"complete",
+	"completed",
+	"pending",
+	"progress",
+	"report",
+	"summary",
+	"review",
+	"plan",
+	"execute",
+	"start",
+	"launch",
+	"checklist",
+	"audit",
+	"update",
+	"fix",
+	"cleanup",
+	"deploy",
+	"release",
+	"verify",
+	"the",
+	"a",
+	"an",
+	"is",
+	"are",
+	"was",
+	"were",
+	"be",
+	"been",
+	"of",
+	"for",
+	"and",
+	"or",
+	"to",
+	"in",
+	"on",
+	"at",
+	"it",
+	"this",
+	"that",
+	"with",
+	"from",
+	"by",
+	"as",
+	"we",
+	"you",
 ]);
 function gateKeywords(text, max) {
 	const out = [];
@@ -1195,7 +1247,7 @@ function closureCheck(conn, title, content) {
 		//    ②SQL 时间窗下推：ts >= 72h 前在 SQL 先过滤（修 LIMIT 150 截断漂移——库增长后老僵尸被挤出窗）；
 		//    ③同批互证防线由①元类全排承担（META_RE 72h 窗全排·B1 成果）；同日真 fact 为有效证据，不作时间性排除（A-1 C 案终谳·design-approved
 		const META_RE =
-			/盘点|清单|裁处|裁断|pending ruling|裁定|裁决|判定|剩.{0,4}条|清理field report|汇总|审计|复现|自检|escalate|方案|awaiting approval|草案|todo清理|待办清理|清理需区分|区分.{0,8}(真活|已闭环|被超越)|receipt|notify|field report|交接|追加|log|open item|counter/;
+			/盘点|清单|裁处|裁断|pending ruling|裁定|裁决|判定|剩.{0,4}条|清理field report|汇总|审计|复现|自检|escalate|方案|awaiting approval|草案|todo清理|待办清理|清理需区分|区分.{0,8}(真活|已闭环|被超越)|receipt|notify|field report|交接|追加|log|open item|counter|\b(?:audit|checklist|inventory|summary|report|review|retrospective|handover|handoff|proposal|pending)\b/i; // 0.2.0 首刀：英文元类分支追加（\b 边界·i flag 中文零影响）——英文「关于事实的记忆」证据同排除
 		const pastIso = (msAgo) => {
 			const d = new Date(Date.now() + 8 * 3600 * 1000 - msAgo);
 			const p = (n) => String(n).padStart(2, "0");
@@ -4304,7 +4356,7 @@ module.exports = {
 						// 「常见词强命中」：bm25 0.86 的「无效查询」单 token 命中被此门挡）。中文 2 字核心词天然 1 bigram
 						// 交叠会被误挡（召回代价·宁缺毋滥口径·观察一周再议降阈）。
 						const intentRe =
-							/[0-9一二三四五六七八九十]{1,4}\s*(月|日|号|点|时|次|条|个|d|h|分)|最近|今天|昨天|上周|上月|之前|之前那|上次|昨天那|刚才|进度|状态|报(告|表)|怎么|如何|什么|哪|谁|是否|还|继续|接(手|续|令|着)|查|找|搜|看|列|盘|总|结|汇|对比|差异|回(顾|顾下|执)|复(盘|跑|核)|待办|进行|在办|完成|毕|验收|呈|批|裁|令|案|刀|车|窗|库|表|面板|通道|插件|模型|参数|配置|路径|版本|行号|文件|目录|备份|快照|回归|演练|审计|nightly patrol|living memory|记忆|检索|注入|提炼|写入|召回|分词|词表|权限|红线|hard rule|纪律|space|模块|工程|施工|发车|重启|挂载/;
+							/[0-9一二三四五六七八九十]{1,4}\s*(月|日|号|点|时|次|条|个|d|h|分)|最近|今天|昨天|上周|上月|之前|之前那|上次|昨天那|刚才|进度|状态|报(告|表)|怎么|如何|什么|哪|谁|是否|还|继续|接(手|续|令|着)|查|找|搜|看|列|盘|总|结|汇|对比|差异|回(顾|顾下|执)|复(盘|跑|核)|待办|进行|在办|完成|毕|验收|呈|批|裁|令|案|刀|车|窗|库|表|面板|通道|插件|模型|参数|配置|路径|版本|行号|文件|目录|备份|快照|回归|演练|审计|nightly patrol|living memory|记忆|检索|注入|提炼|写入|召回|分词|词表|权限|红线|hard rule|纪律|space|模块|工程|施工|发车|重启|挂载|\b(?:\d+\s*(?:d|h|days?|hrs?|hours?|weeks?|months?|times?)|yesterday|today|tomorrow|recently|latest|last\s+(?:week|month|time|night|session)|ago|when)\b|\b(?:status|progress|pending|todo|done|complete[dt]?|finish(?:ed)?|verified?|audit(?:ed)?|review(?:ed)?|recap|summary)\b|\b(?:how|what|where|which|who|why|whose|whom)\b|\b(?:continue|resume|restart|find|search|look(?:up)?|list|show|check|compare|diff|track)\b|\b(?:memory|memories|recall|retriev\w*|inject\w*|extract\w*|index|schema|config\w*|plugin|model|version|backup|snapshot|patrol|nightly|session|window|panel|channel|permission|threshold)\b/i; // 0.2.0 首刀：英文意图分支追加（四段：时间/状态/疑问/动作+域词·全 \b 边界防子串误命中·i flag 治句首大写·中文分支零变）——英文短 query 自动召回高精门不再静默全拒
 						const hasIntent = intentRe.test(query);
 						if (query.length < 10 && !hasIntent) {
 							autoRecallCache.set(key, { query, at: Date.now(), text: "" });
