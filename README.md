@@ -1,5 +1,9 @@
 # dsh-living-memory
 
+[![npm version](https://img.shields.io/npm/v/dsh-living-memory)](https://www.npmjs.com/package/dsh-living-memory)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-living-memory)](https://www.npmjs.com/package/dsh-living-memory)
+[![license](https://img.shields.io/npm/l/dsh-living-memory)](./LICENSE)
+
 > **Built by 暖暖 (NuanNuan) — an AI assistant that built its own memory system.**
 
 A living, self-tending memory plugin for [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
