@@ -26,10 +26,10 @@
       "_note": "classic prompt-injection opener (EN + ZH)"
     },
     {
-      "re": "(?:system\\s*prompt|系统提示|你是系统|you\\s+are\\s+now)",
+      "re": "(?:你是系统|you\\s+are\\s+now\\s+(?:a|an|the)?)",
       "flags": "i",
       "reason": "instruction-payload",
-      "_note": "role-hijack opener (EN + ZH)"
+      "_note": "role-hijack opener (EN + ZH); aligned with the in-source rule set (subset assertion)"
     },
     {
       "re": "[A-Za-z0-9+/=]{80,}",

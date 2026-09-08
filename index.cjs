@@ -51,7 +51,21 @@ const PATROL_CHECK_MS = 30 * 60 * 1000; // 每 30 分钟检查一次是否入窗
 // 官方 changelog 实证 ID：deepseek-v4-flash（2026-08-13 文本档上线·同端点同 key 零新凭据）。
 // 原 deepseek-chat 通用档 → Flash 低成本档；env LEGION_EXTRACT_MODEL 可覆（观察期灵活回退）。
 const EXTRACT_MODEL = process.env.LEGION_EXTRACT_MODEL || "deepseek-v4-flash";
+// ── issue#1 修②（design-approved
+//    防慢速响应长持 extracting 互斥锁（Undici 默认 300s×2 只是兜底·四 attempts 最坏 20 分钟）；
+//    默认 120s 下四 attempts 最坏 8 分钟封顶。超时 abort 走既有 fetch fail → skip 路径。
+const EXTRACT_TIMEOUT_MS = Number(process.env.LEGION_EXTRACT_TIMEOUT_MS) || 120000;
 const SPOKEN_MODEL = process.env.LEGION_SPOKEN_MODEL || "deepseek-chat"; // 09-03 裁③（maintainer B 案）：spoken-prefix 模型独立旋钮——修「EXTRACT_MODEL 不传导」契约破洞·缺省现状零行为变·两链独立调优（质量directive按需分配）
+// ── item1：查询侧 instruct（design-approved
+//    探针实证（09-07 /tmp/probe-instruct.cjs 三臂·qwen3.7-text-embedding）：兼容模式 text_type 被
+//    忽略（cos=1.000000 向量未变）·instruct 生效（cos=0.951 显著偏移）——故只落 instruct 不落
+//    text_type（原生端点才支持·不为此换端点改请求体）。E5「query:」前缀官方等价·qwen3.7 指令
+//    遵循较 v4 +16.4%（官方文档）。文档侧（chunks 补嵌/nightly patrol回填/A-14 写时）一律不传——查询/文档
+//    不对称正形态。A/B：LEGION_INSTRUCT_OFF 回退·LEGION_INSTRUCT_TEXT 指令覆盖（扫描用）。
+const INSTRUCT_QUERY =
+	process.env.LEGION_INSTRUCT_TEXT ||
+	"Given a user's colloquial query in Chinese, retrieve the most relevant long-term memory entries";
+const INSTRUCT_OFF = !!process.env.LEGION_INSTRUCT_OFF;
 const EXTRACT_API = "https://api.deepseek.com/chat/completions";
 // ── Guard rules are data, not code ───────────────────────────────────────────
 // Every content-safety rule this plugin enforces lives in a JSON data file, so the
@@ -195,6 +209,28 @@ function loadDictData() {
 	return out;
 }
 const DICT = loadDictData();
+
+// ── wave#5 KNOWN_FIXES 修正表（design-approved
+//    已知幻觉/截断形态→修正字典·A-20 产边 prompt 伴生消费（LLM 产时即避）。失败降级空表。
+const KNOWN_FIXES = (() => {
+	try {
+		const d = JSON.parse(
+			fs2.readFileSync(path.join(__dirname, "known-fixes.json"), "utf8"),
+		);
+		if (Array.isArray(d.fixes))
+			return d.fixes.filter(
+				(f) => f && typeof f.wrong === "string" && typeof f.right === "string",
+			);
+	} catch {}
+	return [];
+})();
+const knownFixesHint = () =>
+	process.env.LEGION_KNOWN_FIXES_OFF || KNOWN_FIXES.length === 0
+		? ""
+		: "\n已知修正（产出时照此避错·勿产出左列错误形态）：\n" +
+			KNOWN_FIXES.map((f) => "- 「" + f.wrong + "」→「" + f.right + "」").join(
+				"\n",
+			); // wave#5：A-20 产边 prompt 伴生
 // ── Sensitive-topic gate (second layer, downstream of the credential scan) ──────
 // Entries matching GUARD.sensitive are kept OUT of auto-extraction and out of the
 // auto-recall injection surface: the automatic layer only ever emits reference-grade
@@ -300,6 +336,7 @@ function memoryRender(args, value) {
 					"·" +
 					(v.via || "?") +
 					(v.recallMode ? "·" + v.recallMode : "") +
+					(v.asOf ? "·🕰时点 " + v.asOf : "") + // #10：时点快照可视化——search 头带时点锚（与 recallMode as-of 并读）
 					"）",
 			);
 			for (const h of v.hits)
@@ -318,11 +355,14 @@ function memoryRender(args, value) {
 							? "·词" + h.ftsBase + "/语" + (h.vecPart || 0)
 							: "") +
 						(h.confidence !== undefined && h.confidence < 1 ? "·⚠外部源" : "") +
+						(h.episodic ? "·♻原文可回流" : "") +
+						(h.clusterMembers && h.clusterMembers.length ? "·🧩簇直达" : "") +
 						"] " +
 						h.title +
 						(h.content ? "\n      " + String(h.content).slice(0, 120) : ""),
 				);
 			if (v.axisHint) lines.push("  💡 " + v.axisHint);
+			if (v.sagaHint) lines.push("  🧭 " + v.sagaHint); // 件5 面2：Saga 社区叙事脉络行
 			if (v.cooccur)
 				lines.push(
 					"  🔗 共现加成 " +
@@ -352,7 +392,12 @@ function memoryRender(args, value) {
 			else lines.push("📖 source-document replay: " + (v.error || "unavailable"));
 		} else if (a.action === "timeline" && Array.isArray(v.entries)) {
 			lines.push(
-				"🧠 时间线（" + v.total + " 条活跃·最新 " + v.entries.length + "）",
+				"🧠 时间线（" +
+					v.total +
+					" 条活跃·最新 " +
+					v.entries.length +
+					(v.asOf ? "·🕰时点 " + v.asOf : "") + // #10：时点快照可视化——timeline 头带时点锚（10-D asOf 透出）
+					"）",
 			);
 			for (const e of v.entries)
 				lines.push(
@@ -458,6 +503,21 @@ function memoryRender(args, value) {
 			_t("计数闸拦", v.countSkipCount);
 			_t("回落窗", v.evoFallbackWindows);
 			_t("闸未配", v.spaceGateUnconfigured);
+			_t("预裁毕", v.conflictsPreverdicted);
+			_t("蒸馏行", v.assistantDistillLines);
+			_t("消解并", v.entitiesResolved);
+			_t("预裁错", v.conflictsPreclassifErrors);
+			_t("社区簇", v.communitiesBuilt);
+			_t("Saga摘", v.sagaSummaries);
+			_t("Saga错", v.sagaSummaryErrors); // 件5 审计修①：render 透出补三标签（社区簇顺带补）
+			// #8 SelRoute：六类分布非零即显（⑬ 精神——观测面 render 可见·全零零扰动）
+			if (v.queryClassDist) {
+				const qc = Object.entries(v.queryClassDist).filter(
+					([, n]) => Number(n) > 0,
+				);
+				if (qc.length)
+					_tl.push("分类 " + qc.map(([k, n]) => k + "×" + n).join("/"));
+			}
 			if (_tl.length) lines.push("  📊 透出：" + _tl.join("·"));
 		} else if (a.action === "read_episodic") {
 			if (v.episodicContext)
@@ -499,6 +559,14 @@ function memoryRender(args, value) {
 						v.reflectLink.j +
 						"·auto-link 0.4）——A-MEM dynamic linking",
 				); // #19 stepstep
+			if (v.stampResult)
+				lines.push(
+					"⚠ 写时盖戳：旧条 #" +
+						v.stampResult.stamped +
+						" 标 superseded-auto（jaccard " +
+						v.stampResult.j +
+						"·否证词+数值变化·已立 conflicts 复核案）——wave#2",
+				);
 		} else {
 			return [
 				{ type: "text", text: capRenderText(JSON.stringify(value, null, 2)) },
@@ -678,6 +746,47 @@ function qTokens(text) {
 	return slots.slice(0, 8);
 }
 
+// ── #8 SelRoute 六类路由正则版（wave·design-approved
+//    六类：ss-user/ss-assistant（单会话用户/助手侧）·multi-session（跨窗）·knowledge-update（知识
+//    新鲜度）·temporal（A-23 词表单源复用）·other（兜底）。本期只分类+计数透出（stats.queryClassDist
+//    ·观测一周）——权重路由（如 ss-user→FTS 单路权重升·knowledge-update→spoken 加成升）候分布settled
+//    再pending approval，**不动排序链**。优先序=特异先泛化后（会话指向词＞知识新鲜度词＞泛时间词）——「上次」归
+//    temporal（多会话指向由 multi-session 特异词「他窗/上个会话」承担·重叠面预期内·观测期归因看此）。
+const SELROUTE_TEMPORAL_RE =
+	/上次|最近|之前|昨天|前天|上周|上个月|今晚|今晨|哪天|什么时候|几点|几号|多久/;
+const QUERY_CLASS_RES = [
+	{
+		k: "ss-user",
+		re: /我(?:刚才|之前|前面|先前|早先)?(?:说|提|讲|问|写过?|定过?|定的)/,
+	},
+	{
+		k: "ss-assistant",
+		re: /你(?:刚才|之前|前面|先前|早先)?(?:说|提|讲|答|给)/,
+	},
+	{
+		k: "multi-session",
+		re: /他窗|别的(?:窗|会话)|另一个(?:会话|窗)|上个(?:会话|窗)|哪个(?:窗|会话)|跨窗|前面(?:那|一)个窗/,
+	},
+	{
+		k: "knowledge-update",
+		re: /最[新进]|现在(?:还|是|用|啥)|还(?:在用|是)吗|改(?:了|过)吗|更新(?:后|了)?|升级(?:后|了)|新版|当前版本/,
+	},
+	{ k: "temporal", re: SELROUTE_TEMPORAL_RE },
+];
+const queryClassDist = {
+	"ss-user": 0,
+	"ss-assistant": 0,
+	"multi-session": 0,
+	"knowledge-update": 0,
+	temporal: 0,
+	other: 0,
+};
+function classifyQuery(q) {
+	const s = String(q || "");
+	for (const c of QUERY_CLASS_RES) if (c.re.test(s)) return c.k;
+	return "other";
+}
+
 // ── 融合面·前缀命中加成（design-approved
 //    治「FTS 榜尾→融合 top5」晋席力不足（：前缀入索引后 FTS 单路 spoken 45.8% 而真链 16.7% 纹丝不动——
 //    base=max(ftsBase,vecPart) 量纲被 vecPart×10 主导，榜尾 ftsBase≈0.3 对 vecPart 排1=3.33 十倍差救不回）。
@@ -820,8 +929,8 @@ let spaceGateLastWarnAt = 0; // option闸拦截 warn 节流窗（60s·vecLastWar
 // 8-31 锈面修（审计 F0-1③）：vec 静默死遥测——降级归空须计数透出+节流告警（原 catch 静默归空：401/key 失效/网络断全线不可见）
 let vecChannelErrors = 0; // 故障累计（stats.vecChannelErrors 透出）
 let vecLastWarnAt = 0; // 60s 节流窗（vecCredCache 同级手法）
-async function embedOnce(texts, model) {
-	// DashScope 兼容模式：批量上限 10 条/请求
+async function embedOnce(texts, model, instruct) {
+	// 第三参 instruct：查询侧专用（查询/文档不对称）——qwen3.7 指令遵循 +16.4%（官方）·文档侧一律不传
 	const out = [];
 	for (let i = 0; i < texts.length; i += 10) {
 		const batch = texts.slice(i, i + 10);
@@ -838,6 +947,8 @@ async function embedOnce(texts, model) {
 					input: batch,
 					dimensions: VEC_DIM,
 					encoding_format: "float",
+					// item1：instruct 进 body（探针 cos=0.951 实证生效）·OFF 开关族同闸
+					...(instruct && !INSTRUCT_OFF ? { instruct } : {}),
 				}),
 				signal: AbortSignal.timeout(15000),
 			},
@@ -913,7 +1024,8 @@ async function vecRecallCore(conn, creds, query, topK) {
 		const [qvec] = await embedOnce(
 			[String(query).slice(0, 1500)],
 			VEC_CHUNK_MODEL,
-		); // 09-03 裁①：query 与 chunks 同空间（跨空间混查防线）
+			INSTRUCT_QUERY,
+		); // 09-03 裁①：query 与 chunks 同空间（跨空间混查防线）·item1：查询侧 instruct（探针实证 cos=0.951 生效·qwen3.7 指令遵循）
 		// 句级 max-sim：每条目取其 chunks 与 query 的最大余弦（opsem 迟交互同构·条目=多向量文档）
 		const allChunks = conn
 			.prepare(
@@ -1149,7 +1261,7 @@ function closureCheck(conn, title, content) {
 const BUILTIN_SPACES = [
 	"brain",
 	"hand",
-	"reflex",
+	"reflex", // ＝极简space（快神经）空间·ORGAN_DIR_MAP 映射·零条目因该窗少写记忆·非死枚举（09-08 brain亲验纠审计误判·七小件③）
 	"creator",
 	"fetcher",
 	"xhs",
@@ -1212,7 +1324,8 @@ const ORGAN_DIR_MAP = _built.map;
 //    （新装用户一条记忆都写不进去，日志只有一行 warn）。
 //    修：映射面全空 ＝ 闸未配置 → 降级放行并计数透出；用户一旦配好目录映射（放个模块目录即自注册）
 //    闸自动恢复生效。内源侧映射表非空 → 本条件恒假 → 零行为变更。
-const SPACE_GATE_CONFIGURED = ORGAN_DIR_MAP.length > 0 || autoRegistered.length > 0;
+const SPACE_GATE_CONFIGURED =
+	ORGAN_DIR_MAP.length > 0 || autoRegistered.length > 0;
 function organFromPath(p) {
 	const s = String(p || "");
 	for (const [seg, space] of ORGAN_DIR_MAP) if (s.includes(seg)) return space;
@@ -1343,20 +1456,10 @@ function sessionOrgan(sid) {
 		if (!_pcCache.map || Date.now() - _pcCache.at > 60000) {
 			_pcCache = {
 				at: Date.now(),
-				map: JSON.parse(
-					fs2.readFileSync(
-						path.join(
-							os.homedir(),
-							".dsh",
-							"storages",
-							"session_projcache.json",
-						),
-						"utf8",
-					),
-				),
+				map: projcacheRows(), // 庚刀修②：Map(sid→{rows,identity})——v5 双源（旧 JSON.parse 单文件死指针）
 			};
 		}
-		const tbl = _pcCache.map?.tables?.sessions?.[key];
+		const tbl = _pcCache.map?.get?.(key); // 庚刀修②（2026-09-08）：projcacheV5 双源 map（旧 tables.sessions 09-05 停更=新会话归属失联面）
 		// P0 修复（design-approved 系幻字段（rows 层无此键·两日恒空·二审settled）
 		const cwd =
 			tbl?.identity?.cwd || tbl?.rows?.cwd?.val || tbl?.rows?.workspace?.val;
@@ -1541,7 +1644,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					type: "string",
 					enum: SPACES,
 					description:
-						"Owning space (required): one of the built-in spaces, plus any module directory auto-registered at startup (see stats.autoRegisteredSpaces)",
+						"Owning space (required): one of the built-in spaces, plus any module directory auto-registered at startup (see stats.autoRegisteredSpaces)", // reflex=极简space空间（BUILTIN_SPACES 同名行注释）·三处出现点之一·删则极简窗写记忆无参数可选（七小件③）
 				},
 				source: { type: "string", description: "来源会话/文件指针（可选）" },
 				event_at: {
@@ -1896,6 +1999,8 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 				//    （0.4 低档·与 A-20 提炼时 'auto-llm' 互补——本刀覆盖手写路即时链）。零 LLM 零嵌入（纯内存扫描·
 				//    千条毫秒级）。幂等 UPSERT 同 A-13。write 分支与 host stats 隔离（P1② 教训）——计数走应答透出。
 				let reflectLink = null;
+				let best19 = null,
+					bestJ19 = 0; // 作用域上提（#2 盖戳复用——原 try 块内 let 致平级引用 ReferenceError 被 catch 静吞）
 				try {
 					const tk19 = (s) => {
 						const out = new Set();
@@ -1921,9 +2026,9 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 								String(args.type),
 								Number(info.lastInsertRowid),
 							);
-						let best19 = null,
-							bestJ19 = 0,
-							bestI19 = 0;
+						best19 = null;
+						bestJ19 = 0;
+						let bestI19 = 0;
 						for (const c of cands19) {
 							const ct19 = tk19(c.title);
 							let inter19 = 0;
@@ -1959,6 +2064,87 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					try {
 						logger?.warn?.(
 							"[living-memory] #19 reflect fail: " + String(e19).slice(0, 60),
+						);
+					} catch {}
+				}
+
+				// ── wave#2 Graphiti 写时矛盾盖戳（design-approved
+				//    保守面：否证词在场 AND 数值/版本面有变化 才自动——j≥0.6 且旧条近 72h 同 space 同 type。
+				//    动作：旧条 stale_state='superseded-auto'+valid_to=今日（软失效不删）+立 conflicts 复核案(design note)。
+				//    语义矛盾不自动（走nightly patrol conflicts 人工）。幂等：stale_state IS NULL 才盖·同对 pending 不重立。LEGION_STAMP_OFF 回退。
+				let stampResult = null;
+				try {
+					if (!process.env.LEGION_STAMP_OFF && best19 && bestJ19 >= 0.6) {
+						const oldRow2 = dbConn
+							.prepare("SELECT ts, title, content FROM memories WHERE id = ?")
+							.get(best19.id);
+						const tsOld2 = Date.parse(String(oldRow2 && oldRow2.ts)) || 0;
+						if (tsOld2 && Date.now() - tsOld2 <= 72 * 3600 * 1000) {
+							const NEG_RE2 =
+								/已废|已失效|已被.{0,6}取代|不再|改为|更正|推翻|否证|过期|作废|已撤/;
+							const numsOf2 = (t, c) => {
+								const out2 = new Map();
+								const re2 = /\d+(?:\.\d+)?/g;
+								const src2 = String(t) + " " + String(c);
+								let m2;
+								while ((m2 = re2.exec(src2)))
+									if (m2[0].length >= 2)
+										out2.set(m2[0], (out2.get(m2[0]) || 0) + 1);
+								return out2;
+							};
+							const negHit2 = NEG_RE2.test(String(title) + String(content));
+							let numChanged2 = false;
+							if (negHit2) {
+								const nn2 = numsOf2(title, content);
+								const on2 = numsOf2(oldRow2.title, oldRow2.content);
+								for (const k2 of nn2.keys())
+									if (!on2.has(k2)) numChanged2 = true;
+							}
+							if (negHit2 && numChanged2) {
+								try {
+									dbConn.exec(`CREATE TABLE IF NOT EXISTS conflicts (
+                    conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    new_id INTEGER NOT NULL, old_id INTEGER NOT NULL,
+                    basis TEXT NOT NULL, evidence TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    decided_at TEXT, decided_by TEXT, created_at TEXT NOT NULL,
+                    pre_verdict TEXT, pre_reason TEXT, pre_at TEXT)`);
+								} catch {} // F0-0 教训：write 分支 conflicts 建表兜底（含预裁三列）
+								const dupStamp = dbConn
+									.prepare(
+										"SELECT COUNT(*) c FROM conflicts WHERE new_id = ? AND old_id = ? AND status = 'pending'",
+									)
+									.get(Number(info.lastInsertRowid), best19.id).c;
+								if (dupStamp === 0) {
+									dbConn
+										.prepare(
+											"UPDATE memories SET stale_state='superseded-auto', valid_to=? WHERE id=? AND stale_state IS NULL",
+										)
+										.run(ts.slice(0, 10), best19.id);
+									dbConn
+										.prepare(
+											"INSERT INTO conflicts (new_id, old_id, basis, evidence, status, created_at) VALUES (?, ?, 'stamp-auto', ?, 'pending', ?)",
+										)
+										.run(
+											Number(info.lastInsertRowid),
+											best19.id,
+											"写时盖戳: j=" + bestJ19.toFixed(2) + " 否证词+数值变化",
+											ts.slice(0, 10),
+										);
+									stampResult = {
+										stamped: best19.id,
+										j: Number(bestJ19.toFixed(2)),
+									};
+								}
+							}
+						}
+					}
+				} catch (eStamp) {
+					try {
+						// 七小件①（09-08）：幻引用修正——registerMemoryWrite（L1600-2246）无第一参上下文对象，
+						// 原幻引用在双层 catch 内静吞 ReferenceError（warn 从未真出）。签名已有 logger（D3），改调 logger。
+						logger?.warn?.(
+							"[living-memory] stamp fail: " + String(eStamp).slice(0, 60),
 						);
 					} catch {}
 				}
@@ -2052,6 +2238,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					count: Number(row.c),
 					...(relatedLinked > 0 ? { relatedLinked } : {}),
 					...(reflectLink ? { reflectLink } : {}),
+					...(stampResult ? { stampResult } : {}), // wave#2 盖戳透出
 					...(bodyHits.length > 0
 						? {
 								softWarn:
@@ -2230,6 +2417,57 @@ module.exports = {
 			ctx.effect(() => stopRoute);
 		}
 
+		// ── 庚刀核心 helper(design note)：projcacheV5 双源读 ──
+		//    宿主 09-02 改 layout:"per-record"——旧单文件 session_projcache.json 自 09-05 00:12 停更（三读者死指针：token spend端点/归属链/nightly patrol压力哨）。
+		//    新面：sessions/session-<sid>.json {version,record:{identity,rows}}——本函数归一双源：新目录优先·空则回退旧单文件·返回 Map(sid→rows)
+		function projcacheRows() {
+			const out = new Map();
+			try {
+				const dir = path.join(
+					os.homedir(),
+					".dsh",
+					"storages",
+					"session_projcache",
+					"sessions",
+				);
+				for (const f of fs2.readdirSync(dir)) {
+					if (!f.endsWith(".json") || !f.startsWith("session-")) continue;
+					try {
+						const j = JSON.parse(fs2.readFileSync(path.join(dir, f), "utf8"));
+						const sid = f.slice("session-".length, -".json".length);
+						const rows = j?.record?.rows;
+						if (rows)
+							out.set(sid, {
+								rows,
+								mtimeMs: fs2.statSync(path.join(dir, f)).mtimeMs,
+								identity: j?.record?.identity,
+							});
+					} catch {}
+				}
+			} catch {}
+			if (out.size > 0) return out;
+			try {
+				// 回退：旧单文件（≤09-05 数据·保面板不断供）
+				const pc = JSON.parse(
+					fs2.readFileSync(
+						path.join(
+							os.homedir(),
+							".dsh",
+							"storages",
+							"session_projcache.json",
+						),
+						"utf8",
+					),
+				);
+				for (const [sid, tbl] of Object.entries(pc?.tables?.sessions || {}))
+					out.set(sid, {
+						rows: tbl?.rows || {},
+						mtimeMs: 0,
+						identity: tbl?.identity,
+					});
+			} catch {}
+			return out;
+		}
 		// ── HTTP token spend端点：token 消耗仪表（2026-08-19 C 线·读 session_projcache 聚合）──
 		if (webServer !== undefined) {
 			const stopTokenRoute = webServer.register({
@@ -2237,18 +2475,8 @@ module.exports = {
 				path: "/living-memory/token-snapshot",
 				handler: (req, res) => {
 					try {
-						const pc = JSON.parse(
-							fs2.readFileSync(
-								path.join(
-									os.homedir(),
-									".dsh",
-									"storages",
-									"session_projcache.json",
-								),
-								"utf8",
-							),
-						);
-						const sessions = pc?.tables?.sessions || {};
+						// 庚刀修①（2026-09-08）：projcacheV5 双源（新目录优先——旧单文件 09-05 停更=面板冻结 9-4 根因）
+						const sessions = projcacheRows();
 						const grand = {
 							uncachedIn: 0,
 							cacheRead: 0,
@@ -2257,24 +2485,16 @@ module.exports = {
 							total: 0,
 						};
 						const rows = [];
-						for (const [sid, tbl] of Object.entries(sessions)) {
-							const r = tbl?.rows || {};
+						for (const [sid, ent] of sessions.entries()) {
+							const r = ent.rows || {};
 							const tu = r.tokenUsage?.val?.totals;
 							if (!tu) continue;
 							const cp = r.contextPressure?.val || {};
 							const row = {
 								sid: sid.slice(0, 16),
-								lastAt:
-									(r.sessionListMetadata &&
-										r.sessionListMetadata.val &&
-										r.sessionListMetadata.val.lastPromptAt) ||
-									0,
+								lastAt: ent.mtimeMs || 0, // v5 面：文件 mtime 代活跃时（旧 sessionListMetadata 已无）
 								title: String((r.title && r.title.val) || "").slice(0, 28),
-								turns:
-									(r.sessionStats &&
-										r.sessionStats.val &&
-										r.sessionStats.val.turns) ||
-									0,
+								turns: r.tokenUsage?.val?.last?.turn || 0, // v5 面：末轮号代 sessionStats.turns
 								uncachedIn: tu.uncachedInputTokens || 0,
 								cacheRead: tu.cacheReadTokens || 0,
 								cacheWrite: tu.cacheWriteTokens || 0,
@@ -2284,11 +2504,26 @@ module.exports = {
 									(tu.cacheReadTokens || 0) +
 									(tu.cacheWriteTokens || 0) +
 									(tu.outputTokens || 0),
-								pressurePct: cp.contextWindow
-									? Math.round(
-											((cp.pressureTokens || 0) / cp.contextWindow) * 100,
-										)
+								pressurePct: cp.contextWindow // 压力假零兜底（09-08 brain报障·失败请求 pressureTokens 被写 0）：pressure=0||<surface 时以 surfaceTokens÷contextWindow 作实测下限+标注
+									? (cp.pressureTokens || 0) === 0 ||
+										(cp.pressureTokens || 0) < (cp.surfaceTokens || 0)
+										? Math.round(
+												((cp.surfaceTokens || 0) / cp.contextWindow) * 100,
+											)
+										: Math.round(
+												((cp.pressureTokens || 0) / cp.contextWindow) * 100,
+											)
 									: null,
+								legacyWindow:
+									cp.contextWindow && cp.contextWindow < 500000
+										? true
+										: undefined, // 审计修②：面板老分母标注（262144 型与现役 1M 不可比·与哨同构）
+								pressureFloor:
+									cp.contextWindow &&
+									((cp.pressureTokens || 0) === 0 ||
+										(cp.pressureTokens || 0) < (cp.surfaceTokens || 0))
+										? "下限·pressure 缺失（上次请求失败）"
+										: undefined, // 信号位：tokenUsage.last 全 0 同源判据（brain  实证）
 							};
 							grand.uncachedIn += row.uncachedIn;
 							grand.cacheRead += row.cacheRead;
@@ -2419,29 +2654,30 @@ module.exports = {
 							pickTodo(
 								db
 									.prepare(
-										"SELECT type, title, content, ts FROM memories WHERE status='active' AND type='todo' AND space = ? ORDER BY id DESC LIMIT 6",
+										"SELECT id, type, title, content, ts FROM memories WHERE status='active' AND type='todo' AND space = ? ORDER BY id DESC LIMIT 6",
 									)
 									.all(injectCallerSpace),
 								1,
-							); // 本空间席（审计修正 20:58：残留 callerSpace 致恒空已修）
+							); // 本空间席（审计修正 20:58：残留 callerSpace 致恒空已修；件②池保 DESC·ASC 在 todos 组装后做）
 							pickTodo(
 								db
 									.prepare(
-										"SELECT type, title, content, ts FROM memories WHERE status='active' AND type='todo' AND space='global' ORDER BY id DESC LIMIT 4",
+										"SELECT id, type, title, content, ts FROM memories WHERE status='active' AND type='todo' AND space='global' ORDER BY id DESC LIMIT 4",
 									)
 									.all(),
 								1,
-							); // global 席（硬配额·directive型不被本空间挤占）
+							); // global 席（硬配额·directive型不被本空间挤占；件②池保 DESC）
 						} else {
 							pickTodo(
 								db
 									.prepare(
-										"SELECT type, title, content, ts FROM memories WHERE status='active' AND type='todo' ORDER BY id DESC LIMIT 12",
+										"SELECT id, type, title, content, ts FROM memories WHERE status='active' AND type='todo' ORDER BY id DESC LIMIT 12",
 									)
 									.all(),
 								2,
-							); // 归属失联兜底：全库顺序两席（原行为）
+							); // 归属失联兜底：全库顺序两席（件②池保 DESC）
 						}
+						todos.reverse(); // item append-only：todo 席 ASC 终态（池保 DESC 取最新+去重原语义·选中后旧→新显示：新待办尾部追加不移动旧条目）
 						// ── v2.4 caller-first（design-approved
 						//    治「注入层噪音泵」：xhs 条目只进 xhs 窗注入面；cross-space动态只经 global 干净管道；低频space陈年账被鲜度闸挡（不足让席 global）
 						const past48h = (() => {
@@ -2458,6 +2694,7 @@ module.exports = {
 										"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND space = ? AND COALESCE(event_at, ts) >= ? ORDER BY id DESC LIMIT 2",
 									)
 									.all(injectCallerSpace, past48h)
+									.reverse()
 							: []; // P1 事件钟锚：鲜度按事件时点判（补记的旧事不占 48h 席）
 						const essRows = injectCallerSpace
 							? (() => {
@@ -2476,10 +2713,10 @@ module.exports = {
 							.prepare(
 								"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND space='global' AND COALESCE(event_at, ts) >= ? AND NOT (title LIKE '%收官%' OR title LIKE '%全绿%' OR title LIKE '%完成%' OR title LIKE '%闭环%') ORDER BY id DESC LIMIT 3",
 							)
-							.all(past48h); // P1 事件钟锚：同 ownRows 口径；8-31 长尾乙档（F2-7）：LIMIT 2→3——原池深 2 与 slice 上限 3 打架致 ownRows=0 时第三席恒空（本空间静默窗口 global 视野少 1 条）
+							.all(past48h); // P1 事件钟锚（池保 DESC：slice(0,n) 取最新 n 原语义·件② ASC 在组装处做）：同 ownRows 口径；8-31 长尾乙档（F2-7）：LIMIT 2→3——原池深 2 与 slice 上限 3 打架致 ownRows=0 时第三席恒空（本空间静默窗口 global 视野少 1 条）
 						const rows = [
-							...ownRows,
-							...gPool.slice(0, 3 - ownRows.length),
+							...ownRows, // 件② ASC：本空间席旧→新（新条目尾部追加）
+							...gPool.slice(0, 3 - ownRows.length).reverse(), // 件②：global 池 DESC 取最新 n·再转 ASC 追加在后
 						].slice(0, 3);
 						// ── 8-31 option：nudge 消费段上提至案A 判定前（原居案A return 后——归属失联态/空库态恒遮蔽·caught in drill）——
 						//    案A 兜底路与正常路共享同一消费点：失联恢复窗恰是最需纪律提示的场景。
@@ -2523,7 +2760,8 @@ module.exports = {
 								.prepare(
 									"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND NOT (title LIKE '%收官%' OR title LIKE '%全绿%' OR title LIKE '%完成%' OR title LIKE '%闭环%') ORDER BY id DESC LIMIT 3",
 								)
-								.all();
+								.all()
+								.reverse(); // item ASC append-only
 							if (fb.length > 0) {
 								let t =
 									"## 暖暖 living memory · latest entries（⚠ 自动注入=参考级·**跨窗兜底**〔归属失联·非本空间速览〕）\n" +
@@ -2532,7 +2770,9 @@ module.exports = {
 											(r) =>
 												"- 🕐" +
 												String(r.eff_ts).slice(5, 10) +
-												" [" +
+												" [#" +
+												r.id +
+												"·" +
 												r.type +
 												"·" +
 												r.space +
@@ -2564,12 +2804,14 @@ module.exports = {
 									(r) =>
 										"- 🕐" +
 										String(r.eff_ts).slice(5, 10) +
-										" [" +
+										" [#" +
+										r.id +
+										"·" +
 										r.type +
 										"] " +
 										r.title,
 								)
-								.join("\n"); // P4：条目头事件时标（MM-DD·≤8字）——注入即带时间观念，directive「时间时效中轴」注入面落点
+								.join("\n"); // P4 时标+item ENGRAM citation（[#id·type] 可核查引用）；原注：条目头事件时标（MM-DD·≤8字）——注入即带时间观念，directive「时间时效中轴」注入面落点
 						if (essRows.length > 0)
 							text +=
 								"\n🧭 常驻核心（#22·亲标不衰·勿当directive）：" +
@@ -2578,7 +2820,112 @@ module.exports = {
 										(r) => "[" + r.type + "] " + String(r.title).slice(0, 30),
 									)
 									.join("｜"); // #22 常驻席：独立行不占 3 席（wb essence 意）
-						// ── P4 轴注记（2026-08-26 stepkickoff·与 P1 同车）：头部时龄结构一行——注入即带时间观念，旧态面可见 ──
+						// ── 回显step（21:43 maintainer·28375d 案治理）：todo 席directive保护——「ops/pending approval/裁决」类directive型待办不被任务型 todo 挤出注入席（在 text 组装前做） ──
+						try {
+							// 8-31 长尾乙档（F2-4）：RE 与 LIKE 提同一词源——原 RE 7 词/LIKE 5 词缺「申请件/裁决」致该两词directive todo 顶替通道失效；>=2 放宽 >=1（单席态替换不扩预算）
+							const ORD_WORDS = [
+								"申请件",
+								"pending approval",
+								"pending ruling",
+								"awaiting approval",
+								"awaiting approval",
+								"裁决",
+							];
+							const ORD_TODO_RE = new RegExp(ORD_WORDS.join("|"));
+							if (
+								todos.length >= 1 &&
+								!todos.some((x) => ORD_TODO_RE.test(x.title))
+							) {
+								const ord = db
+									.prepare(
+										"SELECT id, title, ts FROM memories WHERE status='active' AND type='todo' AND (" +
+											ORD_WORDS.map((w) => `title LIKE '%${w}%'`).join(" OR ") +
+											") ORDER BY id DESC LIMIT 1",
+									)
+									.get();
+								if (ord && !todos.some((x) => x.title === ord.title))
+									todos[0] = {
+										// 件② ASC：顶替最旧一席（ASC 头位）
+										type: "todo",
+										id: ord.id,
+										title: ord.title,
+										ts: ord.ts,
+									}; // 顶替最旧一席（directive型优先·双席内不扩预算）
+							}
+						} catch {}
+						// ── #11 PlanFence（wave·stale-plan 最小刀·吸收计划·09-07 approved）──
+						//    注入面 todo 席升级：Q3 retrieval gate判「已闭环/更晚同题 fact」的 todo → 注入行
+						//    前缀 ⚠ 依据已过期——数据面降权（search 路既有）升级为行动面告警（模型看得见才拦
+						//    得住·与回显step同哲学·不做全形式化依赖图）。地基=11-A step（todo 席 SELECT 带 id 列）。
+						//    判定与 search 路 Q3 同源同参（closureCheck+newer-fact 词命中≥3）·try 静默（注入不因判挂断）。
+						for (const t of todos) {
+							try {
+								const cc = closureCheck(db, t.title, t.content);
+								if (cc.closed) {
+									t.planFence = "#" + cc.by;
+									continue;
+								}
+								const newer = db
+									.prepare(
+										"SELECT id, title, content FROM memories WHERE status = 'active' AND type IN ('fact','decision','lesson') AND id > ? ORDER BY id DESC LIMIT 40",
+									)
+									.all(t.id);
+								const kws = gateKeywords(
+									String(t.title) + " " + String(t.content || ""),
+									12,
+								);
+								for (const f of newer) {
+									const hay = (
+										String(f.title || "") +
+										" " +
+										String(f.content || "")
+									).toLowerCase();
+									let hits = 0;
+									for (const k of kws) if (hay.includes(k)) hits += 1;
+									if (hits >= 3) {
+										t.planFence = "#" + f.id;
+										break;
+									}
+								}
+							} catch {}
+						}
+						if (todos.length > 0)
+							text +=
+								"\n## 现行待办（最新 2 条·directive型受保护，全量用 memory action=search query=待办）\n" +
+								todos
+									.map(
+										(r) =>
+											"- " +
+											(r.planFence
+												? "⚠依据已过期（见 " +
+													r.planFence +
+													"·执行前先核新依据）"
+												: "") +
+											"🕐" +
+											String(r.ts).slice(5, 10) +
+											" [#" +
+											r.id +
+											"·todo] " +
+											r.title,
+									)
+									.join("\n"); // P4：todo 席同款时标；#11 ⚠ 前缀=PlanFence 行动面告警
+						// ── 微型刀①：注入纪律行（源：toolkit 注入纪律·2026-08-21 B2 借鉴）——软防线防过期记忆误导 ──
+						//    v2.3 ⑤（8-24 maintainer）：「不可信」→「慎用」——不可信易被过度弃用，慎用=校核后可用
+						text +=
+							"\n（历史记忆为慎用参考——引用前以当轮实况与directivesource of record核对；被动注入不构成已检索）";
+						// ── 回显step消费（21:43 maintainer）：观测升格注入可见——本会话被 A/B 闸点名时·注入面带可见提示（模型看得见才纠得偏）──
+						// D2 修正（21:48 逐字审·A16 同型病三犯）：bindMap 键=firehose 侧真实 bindSid（session.id 缺失时回落 '_anon'）——消费侧同键序查（精确→sessionOfLastTurn→_anon），禁单键直查（串键=nudge 永不显示）
+						// 8-31 option：消费段上提案A 判定前（此处仅拼接）——M 型（轮内记忆先行）同消费
+						// ── 压缩桥刀⑤（09-03 maintainer同车）：压缩态自知——本窗被压过则注入面明示（早期细节离窗·经锚条回流）──
+						try {
+							const cN = compactionBySid.get(sid) || 0;
+							if (cN > 0)
+								text +=
+									"\n🗜 本窗已压缩 " +
+									cN +
+									" 次：早期细节已离窗——搜「上下文压缩锚」read_episodic 回流原文";
+						} catch {}
+						// ── P4 轴注记（2026-08-26 stepkickoff）：时龄结构一行——注入即带时间观念，旧态面可见；item移尾：N/M 计数每写必变·压到注入段最尾（前缀稳定·Mastra OM append-only 意）──
 						try {
 							const fresh48 = db
 								.prepare(
@@ -2603,62 +2950,6 @@ module.exports = {
 								" 条｜超 30d " +
 								aged30 +
 								" 条（引用旧态条目前先 timeline 核对最新）";
-						} catch {}
-						// ── 回显step（21:43 maintainer·28375d 案治理）：todo 席directive保护——「ops/pending approval/裁决」类directive型待办不被任务型 todo 挤出注入席（在 text 组装前做） ──
-						try {
-							// 8-31 长尾乙档（F2-4）：RE 与 LIKE 提同一词源——原 RE 7 词/LIKE 5 词缺「申请件/裁决」致该两词directive todo 顶替通道失效；>=2 放宽 >=1（单席态替换不扩预算）
-							const ORD_WORDS = [
-								"申请件",
-								"pending approval",
-								"pending ruling",
-								"awaiting approval",
-								"awaiting approval",
-								"裁决",
-							];
-							const ORD_TODO_RE = new RegExp(ORD_WORDS.join("|"));
-							if (
-								todos.length >= 1 &&
-								!todos.some((x) => ORD_TODO_RE.test(x.title))
-							) {
-								const ord = db
-									.prepare(
-										"SELECT title, ts FROM memories WHERE status='active' AND type='todo' AND (" +
-											ORD_WORDS.map((w) => `title LIKE '%${w}%'`).join(" OR ") +
-											") ORDER BY id DESC LIMIT 1",
-									)
-									.get();
-								if (ord && !todos.some((x) => x.title === ord.title))
-									todos[todos.length - 1] = {
-										type: "todo",
-										title: ord.title,
-										ts: ord.ts,
-									}; // 顶替最旧一席（directive型优先·双席内不扩预算）
-							}
-						} catch {}
-						if (todos.length > 0)
-							text +=
-								"\n## 现行待办（最新 2 条·directive型受保护，全量用 memory action=search query=待办）\n" +
-								todos
-									.map(
-										(r) =>
-											"- 🕐" + String(r.ts).slice(5, 10) + " [todo] " + r.title,
-									)
-									.join("\n"); // P4：todo 席同款时标
-						// ── 微型刀①：注入纪律行（源：toolkit 注入纪律·2026-08-21 B2 借鉴）——软防线防过期记忆误导 ──
-						//    v2.3 ⑤（8-24 maintainer）：「不可信」→「慎用」——不可信易被过度弃用，慎用=校核后可用
-						text +=
-							"\n（历史记忆为慎用参考——引用前以当轮实况与directivesource of record核对；被动注入不构成已检索）";
-						// ── 回显step消费（21:43 maintainer）：观测升格注入可见——本会话被 A/B 闸点名时·注入面带可见提示（模型看得见才纠得偏）──
-						// D2 修正（21:48 逐字审·A16 同型病三犯）：bindMap 键=firehose 侧真实 bindSid（session.id 缺失时回落 '_anon'）——消费侧同键序查（精确→sessionOfLastTurn→_anon），禁单键直查（串键=nudge 永不显示）
-						// 8-31 option：消费段上提案A 判定前（此处仅拼接）——M 型（轮内记忆先行）同消费
-						// ── 压缩桥刀⑤（09-03 maintainer同车）：压缩态自知——本窗被压过则注入面明示（早期细节离窗·经锚条回流）──
-						try {
-							const cN = compactionBySid.get(sid) || 0;
-							if (cN > 0)
-								text +=
-									"\n🗜 本窗已压缩 " +
-									cN +
-									" 次：早期细节已离窗——搜「上下文压缩锚」read_episodic 回流原文";
 						} catch {}
 						text += nudgeText;
 						// ── Injection hook: when an injected entry looks like work-in-progress, append a one-line hint ──
@@ -2829,6 +3120,105 @@ module.exports = {
 		let sessionOfLastTurn = "";
 		const guard = { pausedUntil: 0 }; // LlmFailureGuard 状态（吸inbox⑤·401/403/404 熔断）
 
+		// ── wave#1 AUDN 预裁决（design-approved
+		//    只写建议（pre_verdict/pre_reason/pre_at）·maintainer终批才执行（主权不动）。通道复用 EXTRACT_API/MODEL/guard。
+		//    #4 LLM 自相矛盾防御（同车并入·kg_clean 教训）：verdict 枚举外或 verdict-reason 词面矛盾 → 降级 manual（保守解）。
+		const PRECLASSIFY_VERDICTS = new Set([
+			"merge-keep-new",
+			"merge-keep-old",
+			"false-positive",
+			"manual",
+		]);
+		const PRECLASSIFY_CONTRA = [
+			[/^merge-keep-new$/, /保留旧|保留老|旧条更|旧更优|keep[- ]old|应留旧/],
+			[/^merge-keep-old$/, /保留新|新条更|新更优|keep[- ]new|应留新/],
+			[/^false-positive$/, /确属重复|确实重复|应合并|is duplicate|same memory/],
+		];
+		async function preclassifyConflict(entry, cred) {
+			const sys =
+				'你是记忆冲突预裁决器。输入两条记忆条目（新/旧）与立案依据，判断处理建议。输出严格 JSON：{"verdict":"merge-keep-new|merge-keep-old|false-positive|manual","reason":"一句话依据"}。四态语义：merge-keep-new=同主题演进应合并保留新条；merge-keep-old=旧条更优保留旧条；false-positive=并非重复无需合并；manual=无法确定需人工裁决。不要输出 JSON 以外的任何文字。';
+			const usr =
+				"【新条】type=" +
+				entry.nType +
+				" space=" +
+				entry.nSpace +
+				" title=" +
+				String(entry.nTitle).slice(0, 120) +
+				"\ncontent=" +
+				String(entry.nContent).slice(0, 600) +
+				"\n【旧条】type=" +
+				entry.oType +
+				" space=" +
+				entry.oSpace +
+				" title=" +
+				String(entry.oTitle).slice(0, 120) +
+				"\ncontent=" +
+				String(entry.oContent).slice(0, 600) +
+				"\n【立案依据】" +
+				String(entry.basis || "").slice(0, 120);
+			let resp = null;
+			for (let attempt = 0; attempt <= 2; attempt++) {
+				try {
+					resp = await fetch(EXTRACT_API, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Authorization: "Bearer " + cred.value,
+						},
+						body: JSON.stringify({
+							model: EXTRACT_MODEL,
+							messages: [
+								{ role: "system", content: sys },
+								{ role: "user", content: usr },
+							],
+							max_tokens: 200,
+							temperature: 0.1,
+							stream: false,
+						}),
+					});
+				} catch {
+					if (attempt === 2) return null;
+					await new Promise((r2) => setTimeout(r2, 800 * 2 ** attempt));
+					continue;
+				}
+				if (resp.ok) break;
+				const st = resp.status;
+				if ([401, 403, 404].includes(st)) {
+					guard.pausedUntil = Date.now() + 10 * 60_000;
+					return null; // 熔断（与提炼共享 guard——同通道同凭证）
+				}
+				if (![429, 500, 502, 503, 529].includes(st) || attempt === 2)
+					return null;
+				await new Promise((r2) => setTimeout(r2, 800 * 2 ** attempt));
+			}
+			if (!resp || !resp.ok) return null;
+			try {
+				const data = await resp.json();
+				const raw = String(data?.choices?.[0]?.message?.content || "").trim();
+				const m = raw.match(/\{[\s\S]*\}/);
+				if (!m) return { verdict: "manual", reason: "输出非 JSON 降级" };
+				const o = JSON.parse(m[0]);
+				const verdict = String(o.verdict || "").trim();
+				const reason = String(o.reason || "").slice(0, 200);
+				if (!PRECLASSIFY_VERDICTS.has(verdict))
+					return {
+						verdict: "manual",
+						reason: "枚举外降级：" + verdict.slice(0, 40),
+					};
+				for (const [vr, contraRe] of PRECLASSIFY_CONTRA)
+					if (vr.test(verdict) && contraRe.test(reason))
+						return {
+							verdict: "manual",
+							reason:
+								"矛盾防御降级（reason 与 verdict 相左）：" +
+								reason.slice(0, 120),
+						};
+				return { verdict, reason };
+			} catch {
+				return { verdict: "manual", reason: "解析失败降级" };
+			}
+		}
+
 		// ── 提炼核心（DeepSeek 记忆专用 key · 外部直调 · 失败静默）──
 		async function runExtract(opts) {
 			if (extracting) return { skipped: true, reason: "extracting" };
@@ -2870,7 +3260,36 @@ module.exports = {
 					_taken.push(m);
 					_len += piece.length;
 				}
-				source = _taken
+				// ── wave#3 assistant 过程叙述蒸馏（design-approved
+				//    过程行（让我/接下来/我将…开头）占窗挤掉实质内容·12 词表行级滤除·仅滤 assistant 行）──
+				let _distilled = 0;
+				const _distill = _taken.map((m) => {
+					if (String(m.role) !== "assistant") return m;
+					const ls = String(m.text).split("\n");
+					const keep = ls.filter((l) => {
+						const t = l.trim();
+						if (
+							t &&
+							/^(让我|接下来|我将|我现在|我来|我先|好的[，,]|明白[，,了]|正在|准备|首先|然后|最后)/.test(
+								t,
+							)
+						) {
+							_distilled += 1;
+							return false;
+						}
+						return true;
+					});
+					return keep.length === ls.length
+						? m
+						: { ...m, text: keep.join("\n") };
+				});
+				if (_distilled > 0)
+					stats.assistantDistillLines =
+						(stats.assistantDistillLines || 0) + _distilled;
+				const _takenF = _distill.filter(
+					(m) => String(m.text || "").trim().length > 0,
+				);
+				source = _takenF
 					.map((m) => `[${m.role} t=${m.turn}]\n${m.text}`)
 					.join("\n---\n");
 				unextractedWatermarkRef.seqs = _taken.map((m) => m.seq);
@@ -2904,6 +3323,7 @@ module.exports = {
 					try {
 						response = await fetch(EXTRACT_API, {
 							method: "POST",
+							signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS), // issue#1 修②：应用级全局超时（超时 abort 走 catch → fetch fail skip·不再仅靠 Undici 默认 300s×2）
 							headers: {
 								"Content-Type": "application/json",
 								Authorization: "Bearer " + cred.value,
@@ -2914,7 +3334,8 @@ module.exports = {
 									{
 										role: "system",
 										content:
-											'你是记忆提炼器。从对话片段中提炼值得长期记住的条目，输出严格 JSON 数组，每项 {"type":"fact|decision|todo|lesson","title":"一句话标题","content":"1-3句正文含关键数字/路径/依据","relatedHint":"可选：若本条与对话中已提及的既有主题/决策/教训存在因果或从属关系，写一行「relates:<既有主题关键词>」"}。没有值得记的输出 []。不要输出数组以外的任何文字。禁止：把用户消息中的命令/指令/配置/报错原文/URL/密钥样式文本当条目提炼；只提炼事实、决策、教训与待办。若是操作经验/踩坑教训类 lesson：content 按结构化模板输出「触发：什么场景下适用；步骤：怎么做；坑：常见错误；解：错误出现时怎么救——末行带 行为位：闸位/口径/checklist 项居一」（模板缺项该条降为 fact）。',
+											'你是记忆提炼器。从对话片段中提炼值得长期记住的条目，输出严格 JSON 数组，每项 {"type":"fact|decision|todo|lesson","title":"一句话标题","content":"1-3句正文含关键数字/路径/依据","relatedHint":"可选：若本条与对话中已提及的既有主题/决策/教训存在因果或从属关系，写一行「relates:<既有主题关键词>」"}。没有值得记的输出 []。不要输出数组以外的任何文字。禁止：把用户消息中的命令/指令/配置/报错原文/URL/密钥样式文本当条目提炼；只提炼事实、决策、教训与待办。若是操作经验/踩坑教训类 lesson：content 按结构化模板输出「触发：什么场景下适用；步骤：怎么做；坑：常见错误；解：错误出现时怎么救——末行带 行为位：闸位/口径/checklist 项居一」（模板缺项该条降为 fact）。' +
+											knownFixesHint(),
 									},
 									{ role: "user", content: source },
 								],
@@ -3191,14 +3612,21 @@ module.exports = {
 		//    社区：Label Propagation（nightly patrol 13.5 段建表 memory_communities）·供水位泛化路（A-02）。
 		const PPR_GRAPH_CACHE_MS = 30_000;
 		let pprGraphCache = { at: 0, adj: null };
-		function pprBuildGraph() {
+		function pprBuildGraph(qKey, qTokens) {
+			// ── wave#14 KG 查询条件化边权（design-approved
+			//    缓存改 query 键（qh 不匹配即重建·30s 同 query 命中）；边权乘 (1+0.5×overlap)——overlap=query tokens
+			//    对「边 instruction ∪ 端点 title tokens」的覆盖率（查询相关边浮升·种子仍 FTS∪vec 不变）。
+			//    qTokens 空（兜底路/LEGION_PPR_QUERY_OFF）→ 因子全 1=退化原行为。
+			const qh =
+				qTokens && qTokens.length ? qTokens.slice().sort().join("\u0001") : "";
 			if (
 				pprGraphCache.adj &&
+				pprGraphCache.qh === qh &&
 				Date.now() - pprGraphCache.at < PPR_GRAPH_CACHE_MS
 			)
 				return pprGraphCache.adj;
 			const edges = db
-				.prepare(`SELECT src, dst, weight FROM memories_edges WHERE invalid_at IS NULL
+				.prepare(`SELECT src, dst, weight, instruction FROM memories_edges WHERE invalid_at IS NULL
         AND src IN (SELECT id FROM memories WHERE status='active')
         AND dst IN (SELECT id FROM memories WHERE status='active')`)
 				.all();
@@ -3222,6 +3650,34 @@ module.exports = {
 					if (f2) e.weight = Number(e.weight) * f2;
 				}
 			} catch {}
+			// ── #14 查询因子：qTokens 非空时预取端点 title tokens+边 instruction tokens → 覆盖率因子 ──
+			let qSet = null;
+			let titleTok = null;
+			if (qTokens && qTokens.length && !process.env.LEGION_PPR_QUERY_OFF) {
+				qSet = new Set(qTokens);
+				titleTok = new Map();
+				try {
+					const tRows = db
+						.prepare("SELECT id, title FROM memories WHERE status='active'")
+						.all();
+					for (const r of tRows) titleTok.set(r.id, tokenize(String(r.title)));
+				} catch {} // 全表 title 切分失败→因子路静默退场（原行为）
+			}
+			const qFactor = (e) => {
+				if (!qSet) return 1;
+				let inter = 0;
+				const side = (arr) => {
+					if (!arr) return;
+					for (const t of arr) if (qSet.has(t)) inter++;
+				};
+				side(titleTok && titleTok.get(e.src));
+				side(titleTok && titleTok.get(e.dst));
+				if (e.instruction) {
+					for (const t of tokenize(String(e.instruction)))
+						if (qSet.has(t)) inter++;
+				}
+				return 1 + 0.5 * Math.min(1, inter / qSet.size); // 覆盖率帽 1·因子∈[1,1.5]
+			};
 			const adj = new Map(); // id -> [{to, w}]
 			const add = (a, b, w) => {
 				if (!adj.has(a)) adj.set(a, []);
@@ -3230,15 +3686,16 @@ module.exports = {
 					.push({ to: b, w: Math.max(0.1, Math.min(3, Number(w) || 1)) });
 			};
 			for (const e of edges) {
-				add(e.src, e.dst, e.weight);
-				add(e.dst, e.src, e.weight);
+				const qf = qFactor(e);
+				add(e.src, e.dst, e.weight * qf);
+				add(e.dst, e.src, e.weight * qf);
 			}
-			pprGraphCache = { at: Date.now(), adj };
+			pprGraphCache = { at: Date.now(), adj, qh };
 			return adj;
 		}
-		function pprScores(seedIds) {
+		function pprScores(seedIds, qTokens) {
 			try {
-				const adj = pprBuildGraph();
+				const adj = pprBuildGraph(null, qTokens);
 				if (!adj.size || !seedIds || seedIds.length === 0) return null;
 				const d = 0.85,
 					ITER = 15;
@@ -3994,7 +4451,13 @@ module.exports = {
 								if (vc && vc.value) {
 									if (!vecCredCache.v || Date.now() - vecCredCache.t > 60000)
 										vecCredCache = { v: vc.value, t: Date.now() }; // option伴修：embedOnce 凭据前置——vecCredCache 本由 vecRecallCore 填充·直接调 embedOnce 空 Bearer 401 静默（caught in drill·移植接口同构亲验闸同族）
-									const [qv] = await embedOnce([String(query).slice(0, 1500)]);
+									// item1：查询侧 instruct 同落此兜底（查询身份一致）——此路查 memories_vec
+									// 旧表（v4·instruct 未探针）；400 则 catch 静默降级 FTS·留 A/B counter。
+									const [qv] = await embedOnce(
+										[String(query).slice(0, 1500)],
+										undefined,
+										INSTRUCT_QUERY,
+									);
 									const vsql =
 										`SELECT v.id, v.embedding, m.type, m.title, m.content, m.space, COALESCE(m.event_at, m.ts) AS eff_ts FROM memories_vec v JOIN memories m ON m.id = v.id WHERE v.model_version = ? AND m.status='active'` +
 										(callerSpace ? ` AND m.space IN (?, 'global')` : "");
@@ -4159,6 +4622,22 @@ module.exports = {
 					try {
 						db.exec("ALTER TABLE memories ADD COLUMN superseded_by INTEGER");
 					} catch {}
+					// ── wave#1 AUDN：预裁决三列（幂等 ALTER·照 closed_at 先例）
+					try {
+						db.exec("ALTER TABLE conflicts ADD COLUMN pre_verdict TEXT");
+					} catch {}
+					try {
+						db.exec("ALTER TABLE conflicts ADD COLUMN pre_reason TEXT");
+					} catch {}
+					try {
+						db.exec("ALTER TABLE conflicts ADD COLUMN pre_at TEXT");
+					} catch {}
+					// 七小件⑥：同题并案计数列（独立 try——caught in drill：原四 ALTER 共用一个 try，pre_* 已存在即抛错短路 ⇒ 后续列永不补·生产同病）
+					try {
+						db.exec(
+							"ALTER TABLE conflicts ADD COLUMN merged_count INTEGER DEFAULT 1",
+						);
+					} catch {}
 					const CRIT_RE = /policy|charter|constitution|bylaw|directive/i; // foundational-document words — escalates a conflict report
 					const insC = db.prepare(
 						"INSERT INTO conflicts (new_id, old_id, basis, evidence, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
@@ -4180,6 +4659,58 @@ module.exports = {
 							alertFamFiled.set(fam, qAlertFam.get(fam + "%", fam + "%").c > 0);
 						return alertFamFiled.get(fam);
 					};
+					// ── 七小件⑤：系统自动条同题族豁免闸（09-08 maintainer·conflicts 313 案 85%=三类自动条互撞噪声）──
+					//    豁免面=「两侧均系统自动条」的互撞立案；自动条 vs 手写条真冲突仍立（勿step切）。
+					const SYS_AUTO_RE = /^(上下文压缩锚|handover note警报|Auto-Dreamer 语义簇)/;
+					const sysAutoOf = (t) => SYS_AUTO_RE.test(String(t || ""));
+					// ── 七小件⑥：同题 pending 并案制（O(n²)→O(n)·schema 取加列 merged_count 案）──
+					const prefixKeyOf = (t) => {
+						// 固定 6 字前缀（caught in drill：贪婪整段在无标点短题=前缀全题 ⇒ 永不并案·⑥名存实亡）
+						const s = String(t || "");
+						return s.length >= 6 ? s.slice(0, 6) : null;
+					};
+					const qMergePend = db.prepare(
+						"SELECT co.conflict_id FROM conflicts co JOIN memories mn ON mn.id = co.new_id WHERE mn.space = ? AND mn.title LIKE ? AND co.status = 'pending' ORDER BY co.conflict_id LIMIT 1",
+					);
+					const uMergeCount = db.prepare(
+						"UPDATE conflicts SET merged_count = COALESCE(merged_count, 1) + 1 WHERE conflict_id = ?",
+					);
+					const fileC = (newId, oldId, basisTxt, evTxt, space, title) => {
+						const pk = prefixKeyOf(title);
+						if (pk) {
+							const prior = qMergePend.get(space, pk + "%");
+							if (prior) {
+								uMergeCount.run(prior.conflict_id);
+								return false;
+							}
+						}
+						insC.run(newId, oldId, basisTxt, evTxt, nowIso());
+						return true;
+					};
+					// ── 七小件⑦：实体差异守卫（cid613 guard/gate 假阳型）──
+					//    ⚠ 只挂 family 段；614 型（实体抽取漏专有名词·差集空）不拦——抽取面候办。
+					const TIME_ENT_RE = /^\d{2,8}$/;
+					const entOfMap = new Map();
+					for (const er of db
+						.prepare(
+							"SELECT me.memory_id AS mid, e.name AS nm FROM memories_entities me JOIN entities e ON e.entity_id = me.entity_id",
+						)
+						.all()) {
+						if (!entOfMap.has(er.mid)) entOfMap.set(er.mid, new Set());
+						entOfMap.get(er.mid).add(String(er.nm));
+					}
+					const diffExclEntities = (aId, bId) => {
+						if (!entOfMap.has(aId) || !entOfMap.has(bId)) return false;
+						const A = [...entOfMap.get(aId)].filter(
+							(x) => !TIME_ENT_RE.test(x),
+						);
+						const B = [...entOfMap.get(bId)].filter(
+							(x) => !TIME_ENT_RE.test(x),
+						);
+						return (
+							A.some((x) => !B.includes(x)) && B.some((x) => !A.includes(x))
+						);
+					};
 					for (const r of rows) {
 						// exact 判定（原静默段捕获面原样改道）
 						const key = r.type + "\u0000" + r.title;
@@ -4192,12 +4723,15 @@ module.exports = {
 									"SELECT COUNT(*) c FROM conflicts WHERE new_id IN (?, ?) AND old_id IN (?, ?) AND new_id != old_id AND status = 'pending'",
 								)
 								.get(old.id, r.id, old.id, r.id).c;
-							if (dupX === 0)
-								insC.run(
+							if (dupX === 0 && !(sysAutoOf(r.title) && sysAutoOf(old.title)))
+								// 七小件⑤：双侧系统自动条互撞豁免（单侧手写=真冲突仍立）
+								fileC(
 									old.id,
 									r.id,
 									"exact",
 									"type+title 全同" + (CRIT_RE.test(r.title) ? "|⚠重大" : ""),
+									r.space,
+									r.title,
 									nowIso(),
 								); // A15（2026-08-26 修法包）：两参对调——rows 按 id DESC·先见=更新条=保留方装 new_id·后见=更旧条=被合方装 old_id（原颠倒会致 approved 执行面反向合并保旧弃新）
 						} else seenC.set(key, r);
@@ -4225,6 +4759,9 @@ module.exports = {
 								const famI = alertFamOf(grams[i].title),
 									famJ = alertFamOf(grams[j].title);
 								if (famI && famI === famJ && alertFamBlocked(famI)) continue; // 8-31 锈面修①b：警报同题族已立案/已裁决——不重立（流水单根治）
+								if (sysAutoOf(grams[i].title) && sysAutoOf(grams[j].title))
+									continue; // 七小件⑤：双侧系统自动条互撞豁免
+								if (diffExclEntities(grams[i].id, grams[j].id)) continue; // 七小件⑦：实体差异守卫（cid613 假阳根治）
 								const nid = Math.max(grams[i].id, grams[j].id),
 									oid = Math.min(grams[i].id, grams[j].id);
 								// 8-31 锈面修（审计片6①a）：E3 resolved 幂等声明与码不符——已裁决（resolved/approved/executed）对每夜重立流水单。
@@ -4235,13 +4772,15 @@ module.exports = {
 									)
 									.get(nid, oid, nid, oid).c;
 								if (dup === 0)
-									insC.run(
+									fileC(
 										nid,
 										oid,
 										"family",
 										`title jaccard=${sim.toFixed(2)}|同${grams[i].type}同space`,
+										list[0].space,
+										grams[j].title,
 										nowIso(),
-									);
+									); // 七小件⑥：fileC 并案包装
 							}
 						}
 					}
@@ -4280,6 +4819,7 @@ module.exports = {
 										)
 											continue; // type-guard：同 type+同 space（gm type-guard 意·误报收窄第一重）
 										if (String(ma.title) === String(mb.title)) continue; // exact 已记
+										if (sysAutoOf(ma.title) && sysAutoOf(mb.title)) continue; // 七小件⑤：双侧系统自动条互撞豁免
 										const nid2 = Math.max(ma.id, mb.id),
 											oid2 = Math.min(ma.id, mb.id);
 										// 8-31 锈面修（审计片6①a）：semantic 判据同 family 病灶——已裁决对每夜重立。同法修：无序对查重+status 不限（已裁决不重立）·跨判据同对已立案亦不重立（basis 过滤退役）
@@ -4288,15 +4828,18 @@ module.exports = {
 												"SELECT COUNT(*) c FROM conflicts WHERE new_id IN (?, ?) AND old_id IN (?, ?) AND new_id != old_id",
 											)
 											.get(nid2, oid2, nid2, oid2).c;
-										if (dup2 === 0) {
-											insC.run(
+										if (
+											dup2 === 0 &&
+											fileC(
 												nid2,
 												oid2,
 												"semantic",
 												`vec cos≥0.92|同${ma.type}同space`,
-												nowIso(),
-											);
-											semanticFound += 1;
+												ma.space,
+												ma.title,
+											)
+										) {
+											semanticFound += 1; // 七小件⑥：fileC 并案包装（true=新立案计帽·false=并入原案）
 										}
 										if (semanticFound >= 20) break outer; // nightly patrol预算帽：单轮 semantic 最多立 20 对（首周纪律）
 									}
@@ -4313,6 +4856,33 @@ module.exports = {
 								String((e && e.message) || e).slice(0, 80),
 						);
 					} // ⑬ 纪律回溯修（8-38 审计）：S1 病灶本体的空 catch——TDZ 曾被它静默吞一日
+					// ── 七小件②：死向量清理（09-08 maintainer·审计 §四：superseded/done 条向量残留——
+					//    落码时实测 vec 5056 vs active 4779=277 条·每夜冗余参与 A-10 桶与余弦扫描）──
+					try {
+						const dv = db
+							.prepare(
+								"DELETE FROM memories_vec WHERE id IN (SELECT v.id FROM memories_vec v LEFT JOIN memories m ON m.id = v.id WHERE m.id IS NULL OR m.status != 'active')",
+							)
+							.run();
+						const dc = db
+							.prepare(
+								"DELETE FROM memories_vec_chunks WHERE id IN (SELECT c.id FROM memories_vec_chunks c LEFT JOIN memories m ON m.id = c.id WHERE m.id IS NULL OR m.status != 'active')",
+							)
+							.run();
+						stats.deadVecCleaned =
+							(stats.deadVecCleaned || 0) + dv.changes + dc.changes;
+						if (dv.changes + dc.changes > 0)
+							ctx.logger?.warn?.(
+								"[living-memory] dead-vec cleanup (#" +
+									stats.deadVecCleaned +
+									"): vec -" +
+									dv.changes +
+									" chunks -" +
+									dc.changes,
+							);
+					} catch (e2v) {
+						stats.deadVecSkipErrors = (stats.deadVecSkipErrors || 0) + 1;
+					}
 					// ── A-16 merge 执行器（wave·gm mergeNodes 边迁移+自环清理意融入）：approved 裁决自动执行——
 					//    人工主权不动（裁决仍maintainer），执行自动化（原人工 UPDATE）：①被合条 merged+superseded_by
 					//    ②边迁移（被合条端点活边改挂保留方·显式因果边不断链）③自环清理（迁移后 src=dst 软失效）。
@@ -4431,6 +5001,52 @@ module.exports = {
 							"SELECT COUNT(*) c FROM conflicts WHERE status = 'pending'",
 						)
 						.get().c;
+					// ── wave#1 AUDN 预裁段（pending 且未裁·预算帽 40/巡·LEGION_PRECLASSIFY_OFF 回退）：
+					//    只写 pre_* 建议列不动 status——maintainer终批才执行（A16 执行器主权不动）。
+					if (!process.env.LEGION_PRECLASSIFY_OFF) {
+						(async () => {
+							try {
+								if (Date.now() >= guard.pausedUntil) {
+									const cred = await credentials.resolve("DEEPSEEK_MEMORY_KEY");
+									if (cred && cred.value) {
+										const cases0 = db
+											.prepare(
+												"SELECT co.conflict_id cid, mn.type nType, mn.space nSpace, mn.title nTitle, mn.content nContent, mo.type oType, mo.space oSpace, mo.title oTitle, mo.content oContent, co.basis FROM conflicts co JOIN memories mn ON mn.id = co.new_id JOIN memories mo ON mo.id = co.old_id WHERE co.status = 'pending' AND co.pre_verdict IS NULL LIMIT 40",
+											)
+											.all();
+										let preverdicted = 0;
+										for (const c0 of cases0) {
+											const v0 = await preclassifyConflict(c0, cred);
+											if (!v0) break; // 熔断/通道断即止（次夜续）
+											db.prepare(
+												"UPDATE conflicts SET pre_verdict = ?, pre_reason = ?, pre_at = ? WHERE conflict_id = ?",
+											).run(v0.verdict, v0.reason, nowIso(), c0.cid);
+											preverdicted += 1;
+										}
+										if (preverdicted > 0)
+											ctx.logger?.info?.(
+												"[living-memory] AUDN preclassify: " +
+													preverdicted +
+													" cases",
+											);
+									}
+									// 预裁counter尾刷（IIFE 完成后=最终一致·治「主线赋值先于异步落库恒 0」时序）
+									stats.conflictsPreverdicted = db
+										.prepare(
+											"SELECT COUNT(*) c FROM conflicts WHERE pre_verdict IS NOT NULL AND status = 'pending'",
+										)
+										.get().c;
+								}
+							} catch (ePC) {
+								try {
+									ctx.logger?.warn?.(
+										"[living-memory] preclassify fail: " +
+											String(ePC).slice(0, 60),
+									);
+								} catch {}
+							}
+						})();
+					}
 					// ── A-19 validatedCount（wave·gm validated_count 意融入）：新条撞既有主题族→锚条 +1——
 					//    「重复验证的知识自然浮权」。审计 D13 修正（16:04）：原全量对扫=同对每晚重加终身无界（30 天 vc
 					//    失义）；gm 原语义=新事件驱动（再抽取命中才强化）。修：i 侧只取**上次nightly patrol后新条**（patrol_last.at
@@ -4607,23 +5223,27 @@ module.exports = {
 			// ③handover note警报：高压会话检测（>70% 建议换窗）
 			const aged = [];
 			try {
-				const pc = JSON.parse(
-					fs2.readFileSync(
-						path.join(
-							os.homedir(),
-							".dsh",
-							"storages",
-							"session_projcache.json",
-						),
-						"utf8",
-					),
-				);
-				const sessions = pc?.tables?.sessions || {};
-				for (const [sid, tbl] of Object.entries(sessions)) {
-					const cp = tbl?.rows?.contextPressure?.val;
-					if (!cp || !cp.contextWindow || !cp.pressureTokens) continue;
-					const pct = cp.pressureTokens / cp.contextWindow;
-					if (pct > 0.7) aged.push({ sid, pct: Math.round(pct * 100) });
+				const sessions = projcacheRows(); // 庚刀修③（2026-09-08）：v5 双源（旧单文件 09-05 停更=压力哨 09-05 后恒空「无高压」静默假绿）
+				for (const [sid, ent] of sessions.entries()) {
+					const cp = ent.rows?.contextPressure?.val;
+					if (!cp || !cp.contextWindow) continue;
+					// E stale 过滤（09-08 brainreceipt建议·🟠采纳）：mtime>48h 死档不计入高压告警（09-05 seed 残留「脑升级77%」型）——历史高压单列
+					const stale = ent.mtimeMs && Date.now() - ent.mtimeMs > 48 * 3600e3;
+					// B 假零兜底（09-08 brain报障）：pressure=0||<surface（失败请求打空）→ surfaceTokens 下限——「变绿」比假绿更危险
+					const base =
+						(cp.pressureTokens || 0) === 0 ||
+						(cp.pressureTokens || 0) < (cp.surfaceTokens || 0)
+							? cp.surfaceTokens || 0
+							: cp.pressureTokens || 0;
+					if (!base) continue;
+					const pct = base / cp.contextWindow;
+					if (pct > 0.7)
+						aged.push({
+							sid,
+							pct: Math.round(pct * 100),
+							stale: stale || undefined,
+							legacyWindow: cp.contextWindow < 500000 || undefined,
+						}); // 老分母（262144 型）标注·与现役 1M 不可比
 				}
 			} catch (ePR) {
 				stats.pressureReadErrors = (stats.pressureReadErrors || 0) + 1; // P2修#31c（09-03 audit）：压力缓存读取失败透出（原静默=aged 空集「无高压」假绿·写库侧已有 pressureAlertErrors 此为读侧对照）
@@ -4950,6 +5570,46 @@ module.exports = {
 					for (const n of nodes)
 						insC.run(n, label.get(n), repBy.get(label.get(n)) === n ? 1 : 0);
 					stats.communitiesBuilt = new Set(label.values()).size;
+					// ── 件5 面1 Saga 社区叙事摘要（design-approved
+					//    ≥5 条成员的社区生成摘要（rep 标题｜N 条｜top3 成员片段 ≤120 字）→ organ_meta community_summaries（JSON·全量覆写幂等）
+					try {
+						const groups = db
+							.prepare(
+								"SELECT community, COUNT(*) n, MAX(is_rep) hasRep FROM memory_communities GROUP BY community HAVING n >= 5 ORDER BY n DESC LIMIT 80",
+							)
+							.all();
+						const gTitle = db.prepare(
+							"SELECT title FROM memories WHERE id = ? AND status = 'active'",
+						);
+						const summaries = {};
+						for (const g of groups) {
+							const repId = db
+								.prepare(
+									"SELECT mem_id FROM memory_communities WHERE community = ? AND is_rep = 1 LIMIT 1",
+								)
+								.get(g.community);
+							const repT = repId
+								? String(gTitle.get(repId.mem_id)?.title || "").slice(0, 40)
+								: "";
+							if (!repT) continue;
+							const members = db
+								.prepare(
+									"SELECT m.title FROM memory_communities mc JOIN memories m ON m.id = mc.mem_id WHERE mc.community = ? AND m.status = 'active' AND mc.mem_id != ? ORDER BY m.id DESC LIMIT 3",
+								)
+								.all(g.community, repId ? repId.mem_id : 0);
+							summaries[g.community] = {
+								n: g.n,
+								rep: repT,
+								top: members.map((m) => String(m.title).slice(0, 18)),
+							};
+						}
+						db.prepare(
+							"INSERT INTO organ_meta (k, v) VALUES ('community_summaries', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+						).run(JSON.stringify(summaries));
+						stats.sagaSummaries = Object.keys(summaries).length;
+					} catch (e2) {
+						stats.sagaSummaryErrors = (stats.sagaSummaryErrors || 0) + 1;
+					}
 				} catch (error) {
 					ctx.logger?.warn?.(
 						`[living-memory] A-04 communities failed: ${String(error).slice(0, 80)}`,
@@ -4965,14 +5625,22 @@ module.exports = {
 					db.exec(`CREATE TABLE IF NOT EXISTS memories_entities (
             memory_id INTEGER NOT NULL, entity_id INTEGER NOT NULL,
             PRIMARY KEY(memory_id, entity_id))`);
+					// ── wave#13 APEX-MEM 实体消解（design-approved
+					//    aliases=变体名清单（JSON）/canonical_id=指向规范体（变体不删·历史保留）
+					try {
+						db.exec("ALTER TABLE entities ADD COLUMN aliases TEXT");
+					} catch {}
+					try {
+						db.exec("ALTER TABLE entities ADD COLUMN canonical_id INTEGER");
+					} catch {}
 					const stamp2 = nowIso();
 					// 实体抽取：①专有词表种子（DICT 双源合并词全数入库 kind 待抽样核后定）②TfIdf 增强路（title top-3）
-					let seedNames = DICT.words.filter((w) => w && w.length >= 2);
+					const seedNames = DICT.words.filter((w) => w && w.length >= 2);
 					const upEnt =
 						db.prepare(`INSERT INTO entities (name, kind, source_space, first_seen, last_seen) VALUES (?, ?, 'memory-organ', ?, ?)
             ON CONFLICT(name) DO UPDATE SET last_seen = excluded.last_seen`);
 					// kind 分类（步骤 b 接入前置：kind IS NOT NULL 才进检索）：机制词=mech｜space/编制词=organ｜流程文档词=doc
-// kind 映射已外置至词表文件 kinds 字段（双源合并·②覆盖①）——原硬编码字面量含内部术语·随包即泄
+					// kind 映射已外置至词表文件 kinds 字段（双源合并·②覆盖①）——原硬编码字面量含内部术语·随包即泄
 					const KIND_MAP = Object.assign(Object.create(null), DICT.kinds);
 					for (const n of seedNames)
 						upEnt.run(n, KIND_MAP[n] || null, stamp2, stamp2);
@@ -5030,6 +5698,109 @@ module.exports = {
 								"): " +
 								String(eEnt).slice(0, 80),
 						);
+					}
+					// ── wave#13 实体消解段（变体合并·canonical 收敛·LEGION_RESOLVE_OFF 回退）──
+					//    域：kind 非空实体（接入检索面·防 TfIdf 噪音乱并）·判定=归一化等值/编辑距离≤2(≥4字)/字集 jaccard≥0.75(≥3字)
+					//    方向：mention_count 高者为规范体；合并=canonical 指向+aliases 累积+计数并入+链接迁移（变体行保留）
+					if (!process.env.LEGION_RESOLVE_OFF) {
+						try {
+							const normEnt = (s) =>
+								String(s || "")
+									.normalize("NFKC")
+									.toLowerCase()
+									.replace(/[\s\-_/]/g, "");
+							const editDist2 = (a, b) => {
+								const m = a.length,
+									n = b.length;
+								if (Math.abs(m - n) > 2) return 9;
+								const dp = Array.from({ length: m + 1 }, (_, i) => [i]);
+								for (let j = 1; j <= n; j++) dp[0][j] = j;
+								for (let i = 1; i <= m; i++)
+									for (let j = 1; j <= n; j++)
+										dp[i][j] = Math.min(
+											dp[i - 1][j] + 1,
+											dp[i][j - 1] + 1,
+											dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+										);
+								return dp[m][n];
+							};
+							const isVariant = (na, nb) => {
+								const a = normEnt(na),
+									b = normEnt(nb);
+								if (!a || !b || a === b) return a === b && a.length > 0;
+								if (a.length >= 4 && b.length >= 4 && editDist2(a, b) <= 2)
+									return true;
+								if (a.length >= 3 && b.length >= 3) {
+									const sa = new Set(a),
+										sb = new Set(b);
+									let inter = 0;
+									for (const c of sa) if (sb.has(c)) inter++;
+									if (inter / (sa.size + sb.size - inter) >= 0.75) return true;
+								}
+								return false;
+							};
+							const ents = db
+								.prepare(
+									"SELECT entity_id, name, mention_count FROM entities WHERE canonical_id IS NULL AND kind IS NOT NULL ORDER BY mention_count DESC, entity_id",
+								)
+								.all();
+							const getEnt = db.prepare(
+								"SELECT entity_id, name, aliases, canonical_id, mention_count FROM entities WHERE entity_id = ?",
+							);
+							let resolvedN = 0;
+							for (let i = 0; i < ents.length; i++) {
+								const canon = getEnt.get(ents[i].entity_id);
+								if (!canon || canon.canonical_id !== null) continue; // 已被并走（跳过·下巡链接面已收敛）
+								for (let j = ents.length - 1; j > i; j--) {
+									const varCand = ents[j];
+									if (varCand.entity_id === canon.entity_id) continue;
+									const vc = getEnt.get(varCand.entity_id);
+									if (!vc || vc.canonical_id !== null) continue;
+									if (!isVariant(canon.name, vc.name)) continue;
+									// 合并：vc → canon
+									let aliases = [];
+									try {
+										aliases = JSON.parse(
+											getEnt.get(canon.entity_id).aliases || "[]",
+										);
+									} catch {}
+									if (!aliases.includes(vc.name)) aliases.push(vc.name);
+									db.prepare(
+										"UPDATE entities SET aliases = ?, mention_count = mention_count + ? WHERE entity_id = ?",
+									).run(
+										JSON.stringify(aliases),
+										vc.mention_count || 1,
+										canon.entity_id,
+									);
+									db.prepare(
+										"UPDATE entities SET canonical_id = ? WHERE entity_id = ?",
+									).run(canon.entity_id, vc.entity_id);
+									db.prepare(
+										"INSERT OR IGNORE INTO memories_entities (memory_id, entity_id) SELECT memory_id, ? FROM memories_entities WHERE entity_id = ?",
+									).run(canon.entity_id, vc.entity_id);
+									db.prepare(
+										"DELETE FROM memories_entities WHERE entity_id = ?",
+									).run(vc.entity_id);
+									resolvedN += 1;
+								}
+							}
+							if (resolvedN > 0) {
+								stats.entitiesResolved =
+									(stats.entitiesResolved || 0) + resolvedN;
+								ctx.logger?.info?.(
+									"[living-memory] entity resolve: " +
+										resolvedN +
+										" variants merged",
+								);
+							}
+						} catch (eRes) {
+							try {
+								ctx.logger?.warn?.(
+									"[living-memory] entity resolve fail: " +
+										String(eRes).slice(0, 60),
+								);
+							} catch {}
+						}
 					}
 				} catch (error) {
 					ctx.logger?.warn?.(
@@ -5341,7 +6112,17 @@ module.exports = {
 							"storages",
 							"session_projcache.json",
 						);
-					const pc = JSON.parse(fs2.readFileSync(pcPath, "utf8"));
+					const pc = pcPath.endsWith("session_projcache.json")
+						? projcacheRows()
+						: JSON.parse(fs2.readFileSync(pcPath, "utf8")); // 庚刀修⑤（09-08 审计）：默认路径走 v5 双源 Map（旧单文件 stale 半盲）；drill 假投影旋钮（LEGION_SENTINEL_PROJCACHE 指定文件）仍直读
+					const walkEnt = (ent) => {
+						walkPc(ent?.rows || {}, "");
+						walkPc(ent?.identity || {}, "");
+					};
+					if (pc instanceof Map) {
+						for (const ent of pc.values()) walkEnt(ent);
+						pcCount = pcCount;
+					}
 					const PATH_KEYS = /^(cwd|workspace|workdir|rootdir|path)$/i;
 					const walkPc = (o, parentKey) => {
 						if (o && typeof o === "object") {
@@ -5356,7 +6137,7 @@ module.exports = {
 							}
 						}
 					};
-					walkPc(pc, "");
+					if (!(pc instanceof Map)) walkPc(pc, ""); // Map 态已逐 ent 走（修⑤）
 				} catch {
 					alarms.push("projcache 不可读");
 				}
@@ -5410,6 +6191,33 @@ module.exports = {
 				if (!ftsReady) alarms.push("FTS 不可用");
 				if (pathHits > 0)
 					alarms.push("旧路径命中 " + pathHits + " 处（双形态）");
+				// ⑤ 办结状态位哨（design-approved
+				//    active todo 被 solved_by 边指向＝报捷 fact 已链回而 todo 本体漏打 done 戳（僵尸复活通道）——
+				//    只报不改，销账走space流程正路（词面自动闭环已死  closureCheck 自污染·显式边判据不重蹈）。
+				let solvedLeak = 0;
+				try {
+					const leaks = db
+						.prepare(
+							`SELECT t.id AS tid FROM memories t JOIN memories_edges e
+						 ON e.dst = t.id AND e.edge_type = 'solved_by'
+						 WHERE t.status = 'active' AND t.type = 'todo' AND e.invalid_at IS NULL
+						 LIMIT 20`,
+						)
+						.all();
+					solvedLeak = leaks.length;
+					if (solvedLeak > 0)
+						alarms.push(
+							"办结漏戳 todo " +
+								solvedLeak +
+								" 条: " +
+								leaks
+									.map((r) => "#" + r.tid)
+									.join(" ")
+									.slice(0, 120),
+						);
+				} catch {
+					alarms.push("办结状态位哨查询失败");
+				}
 				// 基线落盘（首跑建立，此后比较不倒退）
 				try {
 					db.prepare(
@@ -5426,6 +6234,7 @@ module.exports = {
 					ftsReady,
 					injectOk,
 					pcCount,
+					solvedLeak, // option哨（09-07）：active todo 被 solved_by 边指向条数——0=干净
 					alarm: alarms.length ? alarms.join("；").slice(0, 300) : "",
 				};
 				if (alarms.length > 0) {
@@ -5471,6 +6280,12 @@ module.exports = {
 			stats.lastPatrolMerged = merged;
 			stats.lastPatrolMergedIds = mergedIds.slice(0, 50); // 回查清单（截 50 防 stats 膨胀）
 			stats.conflictsPending = conflictsPending; // 3a sentry report字段
+			stats.conflictsPreverdicted = db
+				.prepare(
+					"SELECT COUNT(*) c FROM conflicts WHERE pre_verdict IS NOT NULL AND status = 'pending'",
+				)
+				.get().c; // AUDN 预裁counter（wave#1）
+			stats.conflictsPreclassifErrors = stats.conflictsPreclassifErrors || 0;
 			stats.lastCooccurPairs = cooccurPairs;
 			// ── step（同批）：nightly patrol存量清算段——治 698 条积压（每账每晚一段=36 夜负增长）；
 			//    fire-and-forget 逐账 while 推段·预算帽全局 40 段/巡·单账 6 段·超余顺延次夜。LEGION_BACKLOG_OFF 回退。
@@ -5742,7 +6557,14 @@ module.exports = {
 				);
 			}
 		}
-		setInterval(nightPatrol, PATROL_CHECK_MS);
+		// ── issue#1 修①（design-approved
+		//    病灶：裸 setInterval 无句柄无清理——热换后旧 timer 残留、旧库连接已关、新旧 patrol 双跑；
+		//    修：ctx.effect 注册+清理函数回收+unref（不阻 headless 退出）。
+		ctx.effect(() => {
+			const timer = setInterval(nightPatrol, PATROL_CHECK_MS);
+			timer.unref?.();
+			return () => clearInterval(timer);
+		});
 		// 沙箱演练钩子（生产不设=零行为差）：LEGION_DRILL_PATROL=1 → apply 后立即强制nightly patrol一轮（flag 闸仍生效）
 		if (process.env.LEGION_DRILL_PATROL === "1") {
 			try {
@@ -5755,7 +6577,7 @@ module.exports = {
 		tools.register({
 			name: "memory",
 			description:
-				"Read-only access to the memory store. When past records, decisions or lessons are relevant, search before answering (memory-first). Actions: search (hybrid keyword + vector recall) | timeline (reverse-chronological browse) | stats (self-check, incl. extraction and nightly-patrol counters) | read_episodic (replay the source-conversation window of an auto-extracted entry) | read_evolution (replay the source-document window of a mirror entry). Writes go through memory_write (role-mounted).",
+				"Read-only access to the memory store. When past records, decisions or lessons are relevant, search before answering (memory-first), and cite entries as [#id] with a timestamp so quotes stay checkable. Actions: search (hybrid keyword + vector recall) | timeline (reverse-chronological browse) | stats (self-check, incl. extraction and nightly-patrol counters) | read_episodic (replay the source-conversation window of an auto-extracted entry) | read_evolution (replay the source-document window of a mirror entry). Writes go through memory_write (role-mounted).",
 			parameters: {
 				type: "object",
 				required: ["action"],
@@ -5790,6 +6612,11 @@ module.exports = {
 						type: "string",
 						description: "search：检索关键词（空格/逗号分隔）",
 					},
+					as_of: {
+						type: "string",
+						description:
+							"可选·#10 as_of 时间旅行（search/timeline 用）：YYYY-MM-DD[THH:mm] 时点快照——只看该时点前已入库(ts≤)且未闭环(closed_at＞)且未失效(valid_to＞)的条目；日期粒度=该日零点口径",
+					},
 					limit: {
 						type: "number",
 						description:
@@ -5809,6 +6636,110 @@ module.exports = {
 					if (action === "search") {
 						if (!args.query) return { error: "search 需要 query 参数" };
 						const limit = Math.min(Number(args.limit) || 5, 20);
+						// ── #10 as_of 时点检索路（wave·design-approved
+						//    治面：审档/复盘需「当时库什么样」——三窗过滤 ts≤as_of ∧ COALESCE(closed_at,'9999')＞as_of
+						//    ∧ COALESCE(valid_to,'9999')＞as_of（已入库∧未闭环∧未失效；'9999' 兜底与 +08:00 ISO 串
+						//    字典序天然兼容；日期粒度=该日零点口径）。专用精简路在正常路之前 return：跳过 vec/rerank/
+						//    spoken boost/cooccur/PPR/hop/community/audit gate（时点快照=词面审档场景·timeline24h 系当前窗
+						//    无意义）；A-24 弃权提示保留。无 env 开关（纯新增参数·缺省零行为变）。decay 用 as_of 锚
+						//    内联简化版（todo/essential/mirror 恒 1.0·fact·decision 28d·lesson 14d 统一档——时点快照=
+						//    当时相对新旧·不套运营新鲜度 P3 分档；decayOf 定义在正常路后 TDZ 不可达·故内联）。
+						const asOfRaw = String(args.as_of || "").trim();
+						if (
+							asOfRaw &&
+							!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T(0[0-9]|1\d|2[0-3]):[0-5]\d)?$/.test(
+								asOfRaw,
+							)
+						)
+							return {
+								error:
+									"as_of 格式非法（YYYY-MM-DD[THH:mm]·A14 同款闸）: " +
+									asOfRaw.slice(0, 30),
+							};
+						if (asOfRaw) {
+							const asOfMs = Date.parse(
+								asOfRaw.includes("T")
+									? asOfRaw + ":00+08:00"
+									: asOfRaw + "T00:00:00+08:00",
+							);
+							const callerCwdA =
+								exec?.agent?.session?.header?.cwd ||
+								exec?.agent?.session?.cwd ||
+								exec?.session?.header?.cwd ||
+								exec?.cwd;
+							const callerSpaceA = organFromPath(callerCwdA);
+							const tokensA = qTokens(String(args.query));
+							const matchA = queryMatch(tokensA);
+							const asOfDecay = (row) => {
+								if (row.type === "todo") return 1.0;
+								if (row.essential === 1) return 1.0;
+								if (String(row.source || "").startsWith("mirror:")) return 1.0;
+								const anchorA = row.event_at || row.ts;
+								const tA = Date.parse(String(anchorA).replace(" ", "T"));
+								if (isNaN(tA) || isNaN(asOfMs)) return 1.0;
+								const daysA = Math.max(0, (asOfMs - tA) / 86400000);
+								const halfA =
+									row.type === "decision" || row.type === "fact" ? 28 : 14;
+								return Math.max(0.05, 0.5 ** (daysA / halfA));
+							};
+							let rowsA = [];
+							if (matchA) {
+								const ftsBaseA = `SELECT m.*, bm25(memories_fts) AS rank FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
+                 WHERE memories_fts MATCH ? AND m.status = 'active'
+                   AND m.ts <= ? AND COALESCE(m.closed_at, '9999') > ? AND COALESCE(m.valid_to, '9999') > ?`;
+								rowsA = db
+									.prepare(
+										ftsBaseA +
+											(callerSpaceA
+												? ` AND m.space IN (?, 'global') ORDER BY rank LIMIT 100`
+												: ` ORDER BY rank LIMIT 200`),
+									)
+									.all(
+										matchA,
+										asOfRaw,
+										asOfRaw,
+										asOfRaw,
+										...(callerSpaceA ? [callerSpaceA] : []),
+									);
+							}
+							const weightedA = rowsA.map((r) => {
+								const rrA = -Number(r.rank || 0);
+								const baseA = Math.max(0, rrA / (1 + rrA));
+								const decA = asOfDecay(r);
+								return {
+									row: r,
+									base: baseA,
+									decay: Math.round(decA * 1000) / 1000,
+									w: baseA * spaceWeight(r.space, callerSpaceA) * decA,
+								};
+							});
+							weightedA.sort((a, b) => b.w - a.w);
+							const pickedA = weightedA.slice(0, limit);
+							return {
+								hits: pickedA.map((s) => ({
+									id: s.row.id,
+									ts: s.row.ts,
+									type: s.row.type,
+									title: s.row.title,
+									space: s.row.space,
+									score: Math.round(s.w * 1000) / 1000,
+									base: Math.round(s.base * 1000) / 1000,
+									decay: s.decay,
+									content: String(s.row.content).slice(0, 200),
+								})),
+								total: weightedA.length,
+								via: "fts",
+								recallMode: "as-of",
+								asOf: asOfRaw,
+								callerSpace: callerSpaceA || "unknown",
+								...(pickedA.length === 0 || pickedA[0].w < 0.15
+									? {
+											abstainHint:
+												"⚠ 该时点库中无强相关条目——勿强答勿拼凑引用；可换关键词重查或调整 as_of 后重试",
+										}
+									: {}),
+							};
+						}
 						// ── step：调用者space（加权用）——header.cwd 官方路径（dsh-tool-fs 同源），探测不到则不加权 ──
 						const callerCwd =
 							exec?.agent?.session?.header?.cwd ||
@@ -5827,9 +6758,13 @@ module.exports = {
 						let vecIds = []; // A-21 作用域修正（16:59·幻引用第三犯自伤）：提升到两 try 外——原 const 在 FTS try 内·cooccur try 引用不可达=整段静默灭
 						let recallMode = "full";
 						let qTokensShared = null; // optionoption（design-approved
+						let queryClass = "other"; // #8 SelRoute：分类结果外提（return 透出·try 外声明防 FTS 异常态丢）
 						try {
 							const tokens = qTokens(String(args.query)); // item：实词优选（注释见自动召回段同源函数）
 							qTokensShared = tokens; // optionoption：外提席内加成用
+							// #8 SelRoute 六类分类（观测版）：只计数+透出·零权重零排序变更——加权链候观测期满分布settled再pending approval
+							queryClass = classifyQuery(args.query);
+							queryClassDist[queryClass] += 1;
 							const match = queryMatch(tokens);
 							if (match) {
 								const ftsBase = `SELECT m.*, bm25(memories_fts) AS rank FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
@@ -6022,6 +6957,15 @@ module.exports = {
 								half = 56;
 							else
 								half = row.type === "decision" || row.type === "fact" ? 28 : 14;
+							// item FadeMem 重要性调制半衰（design-approved(-μ·I_n) 意）：
+							// 验证越多忘得越慢——validated_count≥2（真验证·列 DEFAULT 1=未验证）半衰延长
+							// half_eff=half×(1+0.35·ln(vc))·帽 2.0（vc=2→×1.24·vc=4→×1.48·vc≥8→×2.0）；
+							// vc≤1 →ln(1)=0 零影响（默认条目不动·基线稳）；LEGION_FADEMEM_OFF 回退（开关族同构）
+							if (!process.env.LEGION_FADEMEM_OFF) {
+								const vcF = Number(row.validated_count) || 1;
+								if (vcF > 1)
+									half = half * Math.min(2.0, 1 + 0.35 * Math.log(vcF));
+							}
 							const base = Math.max(0.05, 0.5 ** (days / half));
 							// ── 3b 对冲一档（阶段三）：relevancy 乘法（0.5~1.5·NULL=1.0 中性）——排序层一档，零重写 ──
 							if (process.env.LEGION_RELEVANCY_OFF) return base; // 对冲开关（3b 验证环 A/B 专用）
@@ -6052,9 +6996,10 @@ module.exports = {
 						//    抬时序信号——论文实证 temporal 类受益最大；我方「上次/最近/之前」类 query 高频。
 						//    实现=temporal 意图时对非 todo 行的 decay 再开方（半衰折半·旧条沉更快·新条浮）——
 						//    非 temporal 零改动零回归；识别词面与 PANZ/轴提示同源（不新造轮子）。
-						const TEMPORAL_RE =
-							/上次|最近|之前|昨天|前天|上周|上个月|今晚|今晨|哪天|什么时候|几点|几号|多久/;
-						const isTemporalQ = TEMPORAL_RE.test(String(args.query || ""));
+						//    #8 SelRoute：词表改引 SELROUTE_TEMPORAL_RE 单源（六类 temporal 类同词面）——防双份词表漂移
+						const isTemporalQ = SELROUTE_TEMPORAL_RE.test(
+							String(args.query || ""),
+						);
 						if (isTemporalQ) {
 							for (const r of weighted) {
 								if (r.row.type === "todo") continue; // todo 不衰减恒 1.0（现行待办不动）
@@ -6141,7 +7086,10 @@ module.exports = {
 							for (const vid of vecIds) {
 								if (!hitIds.has(vid)) pprSeeds.push(vid);
 							}
-							const pprMap = pprScores(pprSeeds.slice(0, 20)); // A-03+A-21：种子=FTS∪vec 命中·teleport 回种子——查询相关
+							const pprMap = pprScores(
+								pprSeeds.slice(0, 20),
+								tokenize(String(args.query || "")),
+							); // A-03+A-21：种子=FTS∪vec 命中·teleport 回种子——查询相关
 							const partnerOf = new Map();
 							for (const p of db
 								.prepare("SELECT id_a, id_b FROM memories_cooccur")
@@ -6256,6 +7204,7 @@ module.exports = {
 						//    （<max(limit,4)）时社区兜底——命中条所在社区其它成员低权注入（0.08 档·配额 3·is_rep 优先）；
 						//    社区表=A-04 nightly patrol建（首夜前无表静默跳过）；独立开关 LEGION_GENERALIZED_OFF。
 						let communityInjected = 0;
+						let sagaHint = ""; // 件5 面2：社区叙事脉络行（泛化+聚齐两路共用）
 						if (
 							!process.env.LEGION_GENERALIZED_OFF &&
 							weighted.length > 0 &&
@@ -6296,11 +7245,62 @@ module.exports = {
 										});
 										communityInjected += 1;
 									}
-									if (communityInjected > 0) weighted.sort((a, b) => b.w - a.w); // 审计 D6 修正（15:04）：注入后重排——原 sort 后 append 永垫底，命中近满时泛化条必被挤掉（注入失效面）
+									weighted.sort((a, b) => b.w - a.w); // 审计 D6 修正（15:04）：注入后重排——原 sort 后 append 永垫底，命中近满时泛化条必被挤掉（注入失效面）
+									// ── 件5 面2 Saga 摘要消费（A-02 升格·2026-09-07）：泛化注入附社区叙事脉络（Graphiti Saga 意——散条→主题脉络）──
+									try {
+										const smRaw = db
+											.prepare(
+												"SELECT v FROM organ_meta WHERE k = 'community_summaries'",
+											)
+											.get();
+										const sm = smRaw ? JSON.parse(smRaw.v) : {};
+										const hitSm = comIds
+											.map((c) => sm[c.community])
+											.find(Boolean);
+										if (hitSm)
+											sagaHint =
+												"同主题脉络：" +
+												hitSm.rep +
+												"｜社区 " +
+												hitSm.n +
+												" 条（泛化注入自该簇）";
+									} catch {}
 								}
 							} catch {
 								/* 社区表未就绪（首夜前）→ 静默 */
 							}
+						}
+						// ── 件5 面2b Saga 聚齐亮脉络（2026-09-07）：正常命中 top5 内 ≥2 条同社区且该社区≥5 条 → sagaHint 主题脉络（纯透出零权重）──
+						if (!sagaHint) {
+							try {
+								const smRaw2 = db
+									.prepare(
+										"SELECT v FROM organ_meta WHERE k = 'community_summaries'",
+									)
+									.get();
+								if (smRaw2) {
+									const sm2 = JSON.parse(smRaw2.v);
+									const top3 = weighted.slice(0, 5).map((x) => x.row.id); // 件5 修①：top3→top5 面（单 query 稳定召回同社区两条入 top3 概率天然低·debug 实测settled）
+									const rows3 = db
+										.prepare(
+											`SELECT community FROM memory_communities WHERE mem_id IN (${top3.map(() => "?").join(",")})`,
+										)
+										.all(...top3);
+									const cnt = {};
+									for (const r of rows3)
+										cnt[r.community] = (cnt[r.community] || 0) + 1;
+									const hit = Object.entries(cnt).find(
+										([c, k]) => k >= 2 && sm2[c],
+									);
+									if (hit)
+										sagaHint =
+											"同主题脉络：" +
+											sm2[hit[0]].rep +
+											"｜社区 " +
+											sm2[hit[0]].n +
+											" 条（命中聚齐）";
+								}
+							} catch {}
 						}
 						// ── 全低于阈值 → top1 + filtered-low-relevance（防假阴性）──
 						const allLow =
@@ -6376,6 +7376,25 @@ module.exports = {
 									: {}), // P2：过时条带 staleMark 头标（审计补②：独立字段名——旧 stale 字段归retrieval gate专用，防同名覆盖）
 								...(s.cooccur ? { cooccur: s.cooccur } : {}),
 								...(s.ppr !== undefined ? { ppr: s.ppr } : {}), // A-03：查询相关图谱分透出（counter）
+								...(/^auto:session-[0-9a-f-]+$/.test(String(s.row.source || ""))
+									? {
+											episodic:
+												"原文可回流：memory action=read_episodic id=" +
+												s.row.id,
+										}
+									: {}), // B级4 情境锚刀（design-approved事实带原始情境指针——检索面透出回流指引·模型见 hint 知证据可升级原文（read_episodic 自带频控 4 轮/窗+charCap）
+								...(String(s.row.source || "") === "dreamer"
+									? {
+											clusterHint: "簇索引条·成员可直达",
+											clusterMembers: [
+												...new Set(
+													(
+														String(s.row.content || "").match(/#\d+/g) || []
+													).map((x) => Number(x.slice(1))),
+												),
+											].slice(0, 10), // B级6 粗到细刀（design-approved源条 id 一跳）——纯透出零排序（件5/情境锚同构系列）
+										}
+									: {}),
 								...(s.communityPath ? { communityPath: true } : {}), // A-02：社区泛化注入标记
 								...(s.entityHop ? { entityHop: true } : {}),
 								...(s.stale
@@ -6397,7 +7416,9 @@ module.exports = {
 							via: viaFts ? "fts" : "scan",
 							recallMode,
 							callerSpace: callerSpace || "unknown",
+							queryClass, // #8 SelRoute：六类分类结果透出（观测·render/评测可读）
 							...(axisHint ? { axisHint } : {}),
+							...(sagaHint ? { sagaHint } : {}), // 件5 面2：Saga 社区叙事脉络（泛化/聚齐两路）
 							...(cooccurBoosted + cooccurInjected > 0
 								? {
 										cooccur: {
@@ -6860,25 +7881,48 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 					}
 					if (action === "timeline") {
 						const limit = Math.min(Number(args.limit) || 10, 20);
+						// ── #10 as_of 三窗（timeline 同款·wave时序补全）：格式闸+ts≤∧COALESCE(closed_at,'9999')＞∧COALESCE(valid_to,'9999')＞
+						//    ——时点快照浏览（10-B search 路同口径）；无 as_of=原行为零变更。
+						const asOfTl = String(args.as_of || "").trim();
+						if (
+							asOfTl &&
+							!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T(0[0-9]|1\d|2[0-3]):[0-5]\d)?$/.test(
+								asOfTl,
+							)
+						)
+							return {
+								error:
+									"as_of 格式非法（YYYY-MM-DD[THH:mm]·A14 同款闸）: " +
+									asOfTl.slice(0, 30),
+							};
+						const tlWin = asOfTl
+							? " AND ts <= ? AND COALESCE(closed_at, '9999') > ? AND COALESCE(valid_to, '9999') > ?"
+							: "";
+						const tlWinArgs = asOfTl ? [asOfTl, asOfTl, asOfTl] : [];
 						let rows;
 						if (args.space) {
 							rows = db
 								.prepare(
-									"SELECT * FROM memories WHERE status = 'active' AND space = ? ORDER BY COALESCE(event_at, ts) DESC, id DESC LIMIT ?",
+									"SELECT * FROM memories WHERE status = 'active' AND space = ?" +
+										tlWin +
+										" ORDER BY COALESCE(event_at, ts) DESC, id DESC LIMIT ?",
 								)
-								.all(String(args.space), limit); // D3 审计修（18:57）：id 序被镜像 440 条霸屏——真时间序（镜像老 ts 沉底·事件钟优先）
+								.all(String(args.space), ...tlWinArgs, limit); // D3 审计修（18:57）：id 序被镜像 440 条霸屏——真时间序（镜像老 ts 沉底·事件钟优先）
 						} else {
 							rows = db
 								.prepare(
-									"SELECT * FROM memories WHERE status = 'active' ORDER BY COALESCE(event_at, ts) DESC, id DESC LIMIT ?",
+									"SELECT * FROM memories WHERE status = 'active'" +
+										tlWin +
+										" ORDER BY COALESCE(event_at, ts) DESC, id DESC LIMIT ?",
 								)
-								.all(limit); // D3 同修
+								.all(...tlWinArgs, limit); // D3 同修
 						}
 						const total = db
 							.prepare(
-								"SELECT COUNT(*) AS c FROM memories WHERE status = 'active'",
+								"SELECT COUNT(*) AS c FROM memories WHERE status = 'active'" +
+									tlWin,
 							)
-							.get();
+							.get(...tlWinArgs);
 						return {
 							entries: rows.map((r) => ({
 								id: r.id,
@@ -6888,6 +7932,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 								space: r.space,
 							})),
 							total: Number(total.c),
+							...(asOfTl ? { asOf: asOfTl } : {}),
 						};
 					}
 					if (action === "stats") {
@@ -7029,7 +8074,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							memoryTotalTurns: stats.memoryTotalTurns || 0, // option：主动查记忆率（真用户轮中有 memory 调用占比·观测面）
 							spaceGateBlocked: spaceGateCounts.blocked,
 							spaceGatePassed: spaceGateCounts.passed,
-						spaceGateUnconfigured: spaceGateCounts.unconfigured, // 空间闸未配置降级放行数（公开派生面常态·内源恒 0） // option：空间白名单闸拦/放计数(ops note)
+							spaceGateUnconfigured: spaceGateCounts.unconfigured, // 空间闸未配置降级放行数（公开派生面常态·内源恒 0） // option：空间白名单闸拦/放计数(ops note)
 							nudgeTurnShown: stats.nudgeTurnShown || 0,
 							nudgeTurnFollowed: stats.nudgeTurnFollowed || 0, // option：轮内记忆先行闸提示/听从计数（观测级·一周误伤率escalate后议拦截级）
 							nudgeTotalShown: readNudgeTotal("nudge_shown_total"),
@@ -7061,10 +8106,15 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							pressureReadErrors: stats.pressureReadErrors || 0, // #31c 压力缓存读段失败（「无高压」假绿防线）
 							spokenFillWmErrors: stats.spokenFillWmErrors || 0, // #32 spoken 观测键写失败
 							extractEventsErrors: stats.extractEventsErrors || 0, // #33 extract events 增强段异常
+							conflictsPreverdicted: stats.conflictsPreverdicted || 0, // AUDN 预裁counter（wave#1·pending 已裁数）
+							assistantDistillLines: stats.assistantDistillLines || 0, // wave#3 蒸馏行计数
+							entitiesResolved: stats.entitiesResolved || 0, // wave#13 消解计数
+							conflictsPreclassifErrors: stats.conflictsPreclassifErrors || 0,
 							evoFallbackWindows: stats.evoFallbackWindows || 0, // 回落窗使用数——09-06 审计补接（乙刀：赋值 L7143/透出读 L319 在而 return 漏=三点断一线永不显示·⑬ 自犯第三例根治；drill=render-stats-drill T0 动态断言新增键自动进面）
 							closureCheckErrors, // #35 四闸核心异常累计（模块级·同 toolUsageErrors 族）
 							surgerySkipVecEmbed, // #26a 挂牌期惰性补嵌跳过
 							surgerySkipWrite, // #26b 挂牌期写入冻结
+							queryClassDist: { ...queryClassDist }, // #8 SelRoute 六类分布（观测一周·本期零权重变更）
 							// ── A-2 counter白名单（step·07:30 maintainer·夜审wave F1 清单）：赋值面 35 键 return 仅 23——14 counter补全 ──
 							bufferRestored: stats.bufferRestored || 0,
 							semanticConflictsFound: stats.semanticConflictsFound || 0,
@@ -7073,6 +8123,8 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							validatedUp: stats.validatedUp || 0,
 							semanticEdges: stats.semanticEdges || 0,
 							communitiesBuilt: stats.communitiesBuilt || 0,
+							sagaSummaries: stats.sagaSummaries || 0, // 件5 审计修①：四点接线补 return（赋值在而 return 缺=计数不可见族）
+							sagaSummaryErrors: stats.sagaSummaryErrors || 0,
 							signalTriggered: stats.signalTriggered || 0,
 							sensitiveSkipCount: stats.sensitiveSkipCount || 0,
 							autoEdges: stats.autoEdges || 0,
@@ -7105,17 +8157,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 										);
 										if (!m) return false;
 										try {
-											const tbl = JSON.parse(
-												require("node:fs").readFileSync(
-													path.join(
-														os.homedir(),
-														".dsh",
-														"storages",
-														"session_projcache.json",
-													),
-													"utf8",
-												),
-											).tables?.sessions?.[m[1]];
+											const tbl = projcacheRows().get(m[1]); // 庚刀修④（09-08 审计·stale 半盲闭合）
 											const cwd = tbl?.identity?.cwd;
 											if (!cwd) return false;
 											const o = organFromPath(cwd);
@@ -7173,17 +8215,22 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 			name: "memory_extract",
 			description:
 				"Trigger extraction manually: hand the recent conversation buffer to the extraction model (its own API key) and write the results straight into the store. Nightly consolidation runs on its own (02:00-06:00), so this is only needed to force an early pass.",
-			parameters: { type: "object", properties: {} },
+			// wave#6（09-07 maintainer·审计 P1-1）：sid 从 output.schema 移入 parameters——原错位致模型不可传参·他窗特权提炼失效
+			parameters: {
+				type: "object",
+				properties: {
+					sid: {
+						type: "string",
+						description:
+							"Optional: extract another session's backlog by id (format session-xxx). Defaults to the current session.",
+					},
+				},
+			},
 			output: {
 				schema: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
-						sid: {
-							type: "string",
-							description:
-								"Optional: extract another session's backlog by id (format session-xxx). Defaults to the current session.",
-						},
 						extracted: { type: "number" },
 						titles: { type: "array", items: { type: "string" } },
 						skipped: { type: "boolean" },
