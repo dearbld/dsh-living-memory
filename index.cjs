@@ -18,11 +18,16 @@ const fs2 = require("node:fs"); // nightly patrol读 session_projcache（handove
 const { execFileSync } = require("node:child_process"); // nightly patrol在线备份（sqlite3 .backup）
 
 // ── step：沙箱开关。MEMORY_DB_PATH 设了→工具面读写指向该路径；未设→正库。
-//    内部管道（nightly patrol/自动提炼/注入/面板）永远走正库 DEFAULT_DB_PATH，不读此变量。单一解析点，禁散落硬编码。──
+//    全链（含nightly patrol/提炼/注入/面板）都走 DB_PATH——演练可整体重定向（第三轮审计修 L16 旧注释漂移：原称「内部管道永远走正库」不实）；
+//    文件写面（快照/G2/镜像/braininbox）随 DRILL_SANDBOX 总闸改道 /tmp，生产路径零接触。单一解析点，禁散落硬编码。──
 const DEFAULT_DB_PATH = path.join(
 	os.homedir(), ".dsh", "dsh-living-memory", "memory.sqlite3",
 );
 const DB_PATH = process.env.MEMORY_DB_PATH || DEFAULT_DB_PATH;
+// ── 第三轮审计pending ruling③（design-approved
+//    治 G2 穿孔案（09-08 knife24 两跑覆写生产source of record+归档·9 月真卷 4023 条亡佚）：旋钮逐段手加无总闸=机制生命周期错位族根因。
+//    原则：drill 全链可测（写面不 skip 只改道）·生产零污染（沙箱库⇒文件全落 /tmp）；显式 LEGION_*_DIR 旋钮恒优先（drill 自定沙箱路径照走）。
+const DRILL_SANDBOX = DB_PATH !== DEFAULT_DB_PATH;
 // ── 数据目录自举（2026-09-07 冷启动caught in drill P0·发布阻塞级）──
 //    病灶：默认库路径的**父目录在全新机器上不存在** → new DatabaseSync 抛
 //    "unable to open database file" → apply 提前 return → memory / memory_write /
@@ -41,7 +46,9 @@ const SURGERY_FLAG =
 // ── step：nightly patrol日快照目录（保留最近 7 天）──
 const SNAPSHOT_DIR =
 	process.env.LEGION_SNAPSHOT_DIR ||
-	path.join(os.homedir(), ".dsh", "dsh-living-memory", "snapshots");
+	(DRILL_SANDBOX
+		? path.join(os.tmpdir(), "living-drill-snapshots") // pending ruling③总闸：沙箱库演练缺省改道 /tmp（防沙箱快照同名覆写生产目录+轮转互删）
+		: path.join(os.homedir(), ".dsh", "dsh-living-memory", "snapshots"));
 const SNAPSHOT_KEEP_DAYS = 7;
 const EXTRACT_INTERVAL_MS = 5 * 60 * 1000; // 自动提炼限频：5 分钟
 const PATROL_START_HOUR = 2; // nightly patrol窗口 02:00–06:00(design note)
@@ -57,6 +64,11 @@ const EXTRACT_MODEL = process.env.LEGION_EXTRACT_MODEL || "deepseek-v4-flash";
 const EXTRACT_TIMEOUT_MS =
 	Number(process.env.LEGION_EXTRACT_TIMEOUT_MS) || 120000;
 const SPOKEN_MODEL = process.env.LEGION_SPOKEN_MODEL || "deepseek-chat"; // 09-03 裁③（maintainer B 案）：spoken-prefix 模型独立旋钮——修「EXTRACT_MODEL 不传导」契约破洞·缺省现状零行为变·两链独立调优（质量directive按需分配）
+// ── AUDN 刀②（09-08 approved·braintask brief 20:1x）：预裁模型独立旋钮——治「枚举外/矛盾」判据质量降级 ──
+//    与 EXTRACT_MODEL 脱钩（提炼主链 flash 不动·量大成本敏感；预裁 40 案/巡≈50-100K·谷时 2-4 元可忽略）。
+//    缺省=deepseek-v4-pro（maintainer升档方向·A/B 对拍为验证环非前置闸；不达标 env 回退 flash 零码改）。
+const PREVERDICT_MODEL =
+	process.env.LEGION_PREVERDICT_MODEL || "deepseek-v4-pro";
 // ── item1：查询侧 instruct（design-approved
 //    探针实证（09-07 /tmp/probe-instruct.cjs 三臂·qwen3.7-text-embedding）：兼容模式 text_type 被
 //    忽略（cos=1.000000 向量未变）·instruct 生效（cos=0.951 显著偏移）——故只落 instruct 不落
@@ -358,6 +370,10 @@ function memoryRender(args, value) {
 						(h.confidence !== undefined && h.confidence < 1 ? "·⚠外部源" : "") +
 						(h.episodic ? "·♻原文可回流" : "") +
 						(h.clusterMembers && h.clusterMembers.length ? "·🧩簇直达" : "") +
+						(h.supersededBy !== undefined
+							? "·↖已被 #" + h.supersededBy + " 取代"
+							: "") + // step：被取代标（ render 消费）
+						(h.doneMark ? "·" + h.doneMark : "") + // step：办结仅标（不降权）
 						"] " +
 						h.title +
 						(h.content ? "\n      " + String(h.content).slice(0, 120) : ""),
@@ -488,7 +504,7 @@ function memoryRender(args, value) {
 			_t("spokenWm错", v.spokenFillWmErrors);
 			_t("extractEv错", v.extractEventsErrors);
 			_t("闭环闸错", v.closureCheckErrors);
-			_t("术跳嵌", v.surgerySkipVecEmbed);
+				_t("术跳嵌", v.surgerySkipVecEmbed);
 			_t("术跳写", v.surgerySkipWrite);
 			_t("周报跑", v.usageWeeklyRuns);
 			_t("提示计", v.nudgeTurnShown);
@@ -568,6 +584,19 @@ function memoryRender(args, value) {
 						v.stampResult.j +
 						"·否证词+数值变化·已立 conflicts 复核案）——wave#2",
 				);
+			if (v.closedTodo)
+				lines.push(
+					v.closedTodo.ok
+						? "✔ 办结闭环：todo #" +
+								v.closedTodo.id +
+								" → done（closed_at " +
+								String(v.closedTodo.closedAt || "").slice(0, 16) +
+								(v.closedTodo.alreadyDone ? "·幂等返原态" : "") +
+								"）——step closeTargetId"
+						: "⚠ 办结闭环未成：" +
+								String(v.closedTodo.reason || "") +
+								"——step",
+				); // step：闭环结果 render 消费
 		} else {
 			return [
 				{ type: "text", text: capRenderText(JSON.stringify(value, null, 2)) },
@@ -1030,8 +1059,8 @@ async function vecRecallCore(conn, creds, query, topK) {
 		// 句级 max-sim：每条目取其 chunks 与 query 的最大余弦（opsem 迟交互同构·条目=多向量文档）
 		const allChunks = conn
 			.prepare(
-				`SELECT c.id, c.embedding FROM memories_vec_chunks c JOIN memories m ON m.id = c.id WHERE c.model_version = ? AND m.status='active'`,
-			)
+				`SELECT c.id, c.embedding FROM memories_vec_chunks c JOIN memories m ON m.id = c.id WHERE c.model_version = ? AND LENGTH(c.embedding) > 0 AND m.status IN ('active','merged','done')`,
+			) // step：vec KNN 池同放宽（与 FTS 候选池一致·惰性回填写路保 active 纯净——merged 条 chunks 多在 active 期已建）；LENGTH>0：余件item一（09-09·三轮审计 §4.4-2）——空条目占位行 Buffer.alloc(0) 进 cosine 出 NaN 污染 bestById（父亲验实锤）·SQL 侧滤除
 			.all(VEC_CHUNK_MODEL);
 		const bestById = new Map();
 		for (const r of allChunks) {
@@ -1233,9 +1262,21 @@ function gateKeywords(text, max) {
 	}
 	return out;
 }
-function closureCheck(conn, title, content) {
+function closureCheck(conn, title, content, todoId) {
 	// step C案：ts 参随②同日排除退役（原仅喂 todoT·P-1 双锚不一致影响面同消）
+	// ── step（design-approved(1) 精确判 closed ──
+	//    边=显式建边意图非词面巧合（再论证改判②：边路免 META_RE）；idx_edges_dst 部分索引恰在 invalid_at IS NULL 上 O(log n)；
+	//    起步只认 solved_by（改判①：patches→todo 语义含混「从待办学到教训」≠办毕·二批再纳）；无边照旧走词面全闸兜底。
 	try {
+		const tid0 = Number(todoId);
+		if (Number.isInteger(tid0) && tid0 > 0) {
+			const eRow = conn
+				.prepare(
+					"SELECT src FROM memories_edges WHERE dst = ? AND edge_type = 'solved_by' AND invalid_at IS NULL LIMIT 1",
+				)
+				.get(tid0);
+			if (eRow) return { closed: true, by: eRow.src, byEdge: "solved_by" }; // byTitle/overlap 不适用（边证非词面证·调用面只消费 by/closed）
+		}
 		const kw = gateKeywords(
 			String(title || "") + " " + String(content || ""),
 			12,
@@ -1328,7 +1369,9 @@ const BUILTIN_SPACES = [
 const BUILTIN_ORGAN_DIR_MAP = [];
 const MODULE_SCAN_DIR =
 	process.env.LEGION_MODULE_SCAN_DIR ||
-	path.join(os.homedir(), ".dsh", "dsh-living-memory", "modules");
+	(DRILL_SANDBOX
+		? path.join(os.tmpdir(), "living-drill-modules") // pending ruling③总闸：沙箱库演练缺省改道 /tmp（镜像段/①层哨读面同随·生产space目录零接触；空目录→自注册回退内置九值·降级已备）
+		: path.join(os.homedir(), ".dsh", "dsh-living-memory", "modules"));
 const autoRegistered = []; // [[目录名, space]]——仅映射表外新目录，内置九值不进此列
 function buildSpacesAndMap() {
 	const spaces = [...BUILTIN_SPACES];
@@ -1490,13 +1533,74 @@ function sessionsDirMap() {
 			const full = path.join(base, ws);
 			try {
 				for (const sess of fs2.readdirSync(full)) {
-					if (sess.startsWith("session-")) map.set(sess, organ);
+					if (
+						sess.startsWith("session-") ||
+						/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+							sess,
+						)
+					)
+						map.set(sess, organ); // 第三轮审计修（09-09 pending ruling①）：裸 uuid 会话目录（子代理窗）同收——原 startsWith 单形态过滤丢 47%
 				}
 			} catch {}
 		}
 	} catch {}
 	sessionsDirCache = { at: Date.now(), map };
 	return map;
+}
+// ── 庚刀核心 helper(design note)：projcacheV5 双源读 ──
+//    宿主 09-02 改 layout:"per-record"——旧单文件 session_projcache.json 自 09-05 00:12 停更（三读者死指针：token spend端点/归属链/nightly patrol压力哨）。
+//    新面：sessions/session-<sid>.json {version,record:{identity,rows}}——本函数归一双源：新目录优先·空则回退旧单文件·返回 Map(sid→rows)
+//    第三轮审计修复（2026-09-09·pending ruling①庚刀三重死）：①上提模块层（原居 apply host 分支内——模块顶层 sessionOrgan 幻引用恒 ReferenceError 被空 catch 静吞·假绿族第六犯）
+//    ②map 键=文件名去 .json 原样（原 slice 剥前缀 vs 查询侧带前缀=键形错位恒不中·双锁死）③放行裸 uuid 文件名（宿主子代理会话 id=裸 uuid·原 startsWith 过滤实测丢 160/338=47% 会话）
+function projcacheRows() {
+	const out = new Map();
+	try {
+		const dir = path.join(
+			os.homedir(),
+			".dsh",
+			"storages",
+			"session_projcache",
+			"sessions",
+		);
+		for (const f of fs2.readdirSync(dir)) {
+			if (!f.endsWith(".json")) continue;
+			if (
+				!f.startsWith("session-") &&
+				!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/.test(
+					f,
+				)
+			)
+				continue; // 双形态：session-* 主窗 + 裸 uuid 子代理窗同收
+			try {
+				const j = JSON.parse(fs2.readFileSync(path.join(dir, f), "utf8"));
+				const sid = f.slice(0, -".json".length); // 键=原文件名去 .json（前缀保留·与查询侧同形对齐）
+				const rows = j?.record?.rows;
+				if (rows)
+					out.set(sid, {
+						rows,
+						mtimeMs: fs2.statSync(path.join(dir, f)).mtimeMs,
+						identity: j?.record?.identity,
+					});
+			} catch {}
+		}
+	} catch {}
+	if (out.size > 0) return out;
+	try {
+		// 回退：旧单文件（≤09-05 数据·保面板不断供）
+		const pc = JSON.parse(
+			fs2.readFileSync(
+				path.join(os.homedir(), ".dsh", "storages", "session_projcache.json"),
+				"utf8",
+			),
+		);
+		for (const [sid, tbl] of Object.entries(pc?.tables?.sessions || {}))
+			out.set(sid, {
+				rows: tbl?.rows || {},
+				mtimeMs: 0,
+				identity: tbl?.identity,
+			});
+	} catch {}
+	return out;
 }
 // 审计5 优化（20:59）：projcache 读盘+解析 476KB→加 60s 结果缓存（注入段每轮调用·auto 提炼低频同享）——新建会话首分钟内归属可能滞后，可接受（下轮刷新）
 let _pcCache = { at: 0, map: null };
@@ -1511,7 +1615,13 @@ function sessionOrgan(sid) {
 				map: projcacheRows(), // 庚刀修②：Map(sid→{rows,identity})——v5 双源（旧 JSON.parse 单文件死指针）
 			};
 		}
-		const tbl = _pcCache.map?.get?.(key); // 庚刀修②（2026-09-08）：projcacheV5 双源 map（旧 tables.sessions 09-05 停更=新会话归属失联面）
+		const tbl =
+			_pcCache.map?.get?.(key) ||
+			_pcCache.map?.get?.(
+				key.startsWith("session-")
+					? key.slice("session-".length)
+					: "session-" + key,
+			); // 第三轮审计修（09-09 pending ruling①）：双形态键兼容——projcache 文件名=session id 原样入键（主窗带前缀·子代理裸 uuid）·两侧形态都试
 		// P0 修复（design-approved 系幻字段（rows 层无此键·两日恒空·二审settled）
 		const cwd =
 			tbl?.identity?.cwd || tbl?.rows?.cwd?.val || tbl?.rows?.workspace?.val;
@@ -1520,7 +1630,13 @@ function sessionOrgan(sid) {
 			if (o) return o;
 		}
 	} catch {}
-	const fromDir = sessionsDirMap().get(key);
+	const fromDir =
+		sessionsDirMap().get(key) ||
+		sessionsDirMap().get(
+			key.startsWith("session-")
+				? key.slice("session-".length)
+				: "session-" + key,
+		); // 第三轮审计自审补（09-09）：兜底路同双形态——收集侧已放行裸 uuid 目录，查询侧单形态则白收（pending ruling①同族残尾）
 	if (fromDir) return fromDir;
 	return null;
 }
@@ -1743,6 +1859,11 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					description:
 						"可选·A-18 语义边型（wave·gm 五语义边意）：显式边关系类型·缺省 explicit",
 				},
+				closeTargetId: {
+					type: "number",
+					description:
+						"可选·step（09-08 maintainer·召回状态化）：todo 办结闭环参数——携带时双发合一：本条正常入库（title 作销句·建议 type=fact）+ 目标 todo 立即 status='done'+closed_at（L1849 闭环正路工程化）。限本 space 的 todo（option空间闸同构）·幂等（已 done 返原态不报错）。与 edgeKind=solved_by+relatedIds=[目标id] 同发即完整闭环（边供检索判定·状态位供注入过滤）",
+				},
 			},
 		},
 		output: {
@@ -1839,13 +1960,13 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					};
 				}
 				const sec = securityCheck(
-					String(args.title),
-					String(args.content) +
+					stripUrls(String(args.title)),
+					stripUrls(String(args.content)) +
 						"\n" +
 						String(args.source || "") +
 						"\n" +
 						String(args.relatedNotes || ""),
-				); // 8-31 长尾乙档（F0-3）：source/relatedNotes 并入扫描面——原两列模型可控输入裸奔（凭据/指令载荷可经 source/边语义落盘并回流注入面）
+				); // 8-31 长尾乙档（F0-3）：source/relatedNotes 并入扫描面——原两列模型可控输入裸奔（凭据/指令载荷可经 source/边语义落盘并回流注入面）；件三车病灶3（09-09）：title/content 改检 stripUrls 后形态（与落库面一致——原检原文致长 URL query 含 sk- 族形态误伤·提炼路先 strip 后检同序对齐）·source/relatedNotes 保持原样（独立落库列无 strip·真载荷面）
 				if (!sec.ok)
 					return {
 						error:
@@ -2045,6 +2166,89 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 							"[living-memory] A-13 edge fail: " + String(e2).slice(0, 60),
 						);
 					} catch {}
+				}
+				// ── step（design-approved再写销账 fact」的工程化 ──
+				//    再论证改判④：独立可选参数（不动 type 枚举——type=条目语义 vs close=动作·LangMem/TodoWrite 同业皆独立动作参数）；
+				//    携带时双发合一：本条正常入库（title 作销句）+ UPDATE 目标 todo → done+closed_at（照 L5127/L5458 merged/aged 写点同步 closed_at 先例）。
+				//    权限=option同构：目标 space 必须等于本次写入 space（写权闸已在前把守·WHERE 三重收窄）；幂等：已 done 返原态不报错。
+				let closedTodo = null;
+				{
+					const closeTarget = Number(args.closeTargetId);
+					if (
+						args.closeTargetId !== undefined &&
+						(!Number.isInteger(closeTarget) || closeTarget <= 0)
+					) {
+						closedTodo = {
+							ok: false,
+							reason:
+								"closeTargetId 非法（正整数）: " +
+								String(args.closeTargetId).slice(0, 20),
+						};
+					} else if (Number.isInteger(closeTarget) && closeTarget > 0) {
+						try {
+							const t3 = dbConn
+								.prepare(
+									"SELECT id, status, closed_at, space, type FROM memories WHERE id = ?",
+								)
+								.get(closeTarget);
+							if (
+								!t3 ||
+								t3.type !== "todo" ||
+								t3.space !== String(args.space)
+							) {
+								closedTodo = {
+									ok: false,
+									reason:
+										"目标 #" +
+										closeTarget +
+										" 非 space「" +
+										String(args.space) +
+										" — close only accepts todos in the same space as this window",
+								};
+							} else if (t3.status === "done") {
+								closedTodo = {
+									ok: true,
+									id: t3.id,
+									alreadyDone: true,
+									closedAt: t3.closed_at,
+								}; // 幂等返原态（不重戳 closed_at）
+							} else if (t3.status !== "active") {
+								// 三案修补案1（09-09 approved·三轮审计 P2）：merged（正账在保留方·被合≠办结）/
+								// aged（TTL 硬退出·done 可回查=复活）不可 close——复活面根治
+								closedTodo = {
+									ok: false,
+									reason:
+										"目标 #" +
+										closeTarget +
+										" status=" +
+										t3.status +
+										"——非可闭环态（close 仅限 active todo·merged/aged 不可复活）",
+								};
+							} else {
+								dbConn
+									.prepare(
+										"UPDATE memories SET status = 'done', closed_at = ? WHERE id = ? AND type = 'todo' AND space = ? AND status = 'active'",
+									)
+									.run(ts, closeTarget, String(args.space)); // WHERE belt-and-braces收窄 status='active'（防 SELECT→UPDATE 间竞态·三案修补案1）
+								closedTodo = {
+									ok: true,
+									id: t3.id,
+									closedAt: ts,
+									prior: t3.status,
+								};
+							}
+						} catch (e3c) {
+							try {
+								logger?.warn?.(
+									"[living-memory] close fail: " + String(e3c).slice(0, 60),
+								);
+							} catch {}
+							closedTodo = {
+								ok: false,
+								reason: "close 执行异常（主条已入库·目标未闭）",
+							};
+						}
+					}
 				}
 				// ── #19 A-MEM 写入即反思（stepstep·2026-08-30 goal 五连刀·A-MEM 论文 dynamic linking 意）──
 				//    新条写入后即时扫同 space 同 type 活跃条·题 token 交叠 jaccard 双门（j≥0.20 且 inter≥2·真库标定）→ 建 'auto-link' 边
@@ -2291,6 +2495,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					...(relatedLinked > 0 ? { relatedLinked } : {}),
 					...(reflectLink ? { reflectLink } : {}),
 					...(stampResult ? { stampResult } : {}), // wave#2 盖戳透出
+					...(closedTodo ? { closedTodo } : {}), // step：办结闭环结果透出（ok/alreadyDone/closedAt·模型可见闭环证据）
 					...(bodyHits.length > 0
 						? {
 								softWarn:
@@ -2469,57 +2674,6 @@ module.exports = {
 			ctx.effect(() => stopRoute);
 		}
 
-		// ── 庚刀核心 helper(design note)：projcacheV5 双源读 ──
-		//    宿主 09-02 改 layout:"per-record"——旧单文件 session_projcache.json 自 09-05 00:12 停更（三读者死指针：token spend端点/归属链/nightly patrol压力哨）。
-		//    新面：sessions/session-<sid>.json {version,record:{identity,rows}}——本函数归一双源：新目录优先·空则回退旧单文件·返回 Map(sid→rows)
-		function projcacheRows() {
-			const out = new Map();
-			try {
-				const dir = path.join(
-					os.homedir(),
-					".dsh",
-					"storages",
-					"session_projcache",
-					"sessions",
-				);
-				for (const f of fs2.readdirSync(dir)) {
-					if (!f.endsWith(".json") || !f.startsWith("session-")) continue;
-					try {
-						const j = JSON.parse(fs2.readFileSync(path.join(dir, f), "utf8"));
-						const sid = f.slice("session-".length, -".json".length);
-						const rows = j?.record?.rows;
-						if (rows)
-							out.set(sid, {
-								rows,
-								mtimeMs: fs2.statSync(path.join(dir, f)).mtimeMs,
-								identity: j?.record?.identity,
-							});
-					} catch {}
-				}
-			} catch {}
-			if (out.size > 0) return out;
-			try {
-				// 回退：旧单文件（≤09-05 数据·保面板不断供）
-				const pc = JSON.parse(
-					fs2.readFileSync(
-						path.join(
-							os.homedir(),
-							".dsh",
-							"storages",
-							"session_projcache.json",
-						),
-						"utf8",
-					),
-				);
-				for (const [sid, tbl] of Object.entries(pc?.tables?.sessions || {}))
-					out.set(sid, {
-						rows: tbl?.rows || {},
-						mtimeMs: 0,
-						identity: tbl?.identity,
-					});
-			} catch {}
-			return out;
-		}
 		// ── HTTP token spend端点：token 消耗仪表（2026-08-19 C 线·读 session_projcache 聚合）──
 		if (webServer !== undefined) {
 			const stopTokenRoute = webServer.register({
@@ -2688,7 +2842,10 @@ module.exports = {
 							let n = 0;
 							for (const td of cands) {
 								if (n >= quota || todos.length >= 2) break;
-								if (closureCheck(db, td.title, td.content).closed) continue;
+								if (
+									closureCheck(db, td.title, td.content, td.id).closed // step：todo 席带 id——solved_by 边前置判定（洞②根治· 型僵尸不再回流）
+								)
+									continue;
 								const tks = gateKeywords(td.title, 10);
 								let dup = false;
 								for (const prev of pickedTk)
@@ -2895,7 +3052,11 @@ module.exports = {
 											") ORDER BY id DESC LIMIT 1",
 									)
 									.get();
-								if (ord && !todos.some((x) => x.title === ord.title))
+								if (
+									ord &&
+									!todos.some((x) => x.title === ord.title) &&
+									!closureCheck(db, ord.title, "", ord.id).closed // 余件item一（09-09·三轮审计 §4.4-3）：directive型顶替补验真——已闭环directive todo 不顶进注入席（僵尸directive回流面·与step/PlanFence 方向对齐）
+								)
 									todos[0] = {
 										// 件② ASC：顶替最旧一席（ASC 头位）
 										type: "todo",
@@ -2912,7 +3073,7 @@ module.exports = {
 						//    判定与 search 路 Q3 同源同参（closureCheck+newer-fact 词命中≥3）·try 静默（注入不因判挂断）。
 						for (const t of todos) {
 							try {
-								const cc = closureCheck(db, t.title, t.content);
+								const cc = closureCheck(db, t.title, t.content, t.id); // step：边判定前置（todo 席 SELECT 带 id 列=地基）
 								if (cc.closed) {
 									t.planFence = "#" + cc.by;
 									continue;
@@ -2933,7 +3094,8 @@ module.exports = {
 										String(f.content || "")
 									).toLowerCase();
 									let hits = 0;
-									for (const k of kws) if (hay.includes(k)) hits += 1;
+									for (const k of kws)
+										if (k.length > 1 && hay.includes(k)) hits += 1; // 余件item一（09-09·三轮审计 §4.4-4）：单字 token 不计 hits——closureCheck 主路 Lβ 同款（CJK 单字命中泛滥→「依据已过期」误标）
 									if (hits >= 3) {
 										t.planFence = "#" + f.id;
 										break;
@@ -3171,6 +3333,7 @@ module.exports = {
 		let extracting = false;
 		let sessionOfLastTurn = "";
 		const guard = { pausedUntil: 0 }; // LlmFailureGuard 状态（吸inbox⑤·401/403/404 熔断）
+		const preguard = { pausedUntil: 0 }; // 件三车：AUDN 预裁独立熔断态（模型分家·与提炼 guard 解连坐）
 
 		// ── wave#1 AUDN 预裁决（design-approved
 		//    只写建议（pre_verdict/pre_reason/pre_at）·maintainer终批才执行（主权不动）。通道复用 EXTRACT_API/MODEL/guard。
@@ -3187,6 +3350,8 @@ module.exports = {
 			[/^false-positive$/, /确属重复|确实重复|应合并|is duplicate|same memory/],
 		];
 		async function preclassifyConflict(entry, cred) {
+			if (preguard.pausedUntil && Date.now() < preguard.pausedUntil)
+				return null; // 件三车审计补丁（09-09·对抗性实抓）：preguard 消费点——原只设不查=预裁熔断不生效（分家后失去共享 guard 检查面·404 后 10min 内照发再撞）
 			const sys =
 				'你是记忆冲突预裁决器。输入两条记忆条目（新/旧）与立案依据，判断处理建议。输出严格 JSON：{"verdict":"merge-keep-new|merge-keep-old|false-positive|manual","reason":"一句话依据"}。四态语义：merge-keep-new=同主题演进应合并保留新条；merge-keep-old=旧条更优保留旧条；false-positive=并非重复无需合并；manual=无法确定需人工裁决。不要输出 JSON 以外的任何文字。';
 			const usr =
@@ -3218,14 +3383,15 @@ module.exports = {
 							Authorization: "Bearer " + cred.value,
 						},
 						body: JSON.stringify({
-							model: EXTRACT_MODEL,
+							model: PREVERDICT_MODEL, // AUDN 刀②（09-08 maintainer）：预裁独立旋钮——与 EXTRACT_MODEL 脱钩（提炼主链 flash 不动）
 							messages: [
 								{ role: "system", content: sys },
 								{ role: "user", content: usr },
 							],
-							max_tokens: 200,
+							max_tokens: 2000, // AUDN 修③（09-08 对拍实抓）：V4 系推理形态——200 被思考链吃光致 content 恒空（v4-pro finish=length 实证）·提额 2000
 							temperature: 0.1,
 							stream: false,
+							response_format: { type: "json_object" }, // AUDN 刀①（09-08 maintainer）：JSON 模式——治「非 JSON/解析失败」降级
 						}),
 					});
 				} catch {
@@ -3236,8 +3402,8 @@ module.exports = {
 				if (resp.ok) break;
 				const st = resp.status;
 				if ([401, 403, 404].includes(st)) {
-					guard.pausedUntil = Date.now() + 10 * 60_000;
-					return null; // 熔断（与提炼共享 guard——同通道同凭证）
+					preguard.pausedUntil = Date.now() + 10 * 60_000;
+					return null; // 熔断（件三车病灶1·09-09：预裁独立 preguard——AUDN 刀②模型已分家 v4-pro/flash·预裁 404（模型 id 特有故障）连坐提炼主链不成立·解连坐）
 				}
 				if (![429, 500, 502, 503, 529].includes(st) || attempt === 2)
 					return null;
@@ -3391,7 +3557,7 @@ module.exports = {
 									},
 									{ role: "user", content: source },
 								],
-								max_tokens: 1200,
+								max_tokens: 3000, // 余件车追加件（09-09·脑实勘终谳）：1200→3000——V4 系推理形态思考链吃额度·长思考+多条目 JSON 尾部截断→解析失败→该段提炼静默丢失（AUDN v4-pro finish=length 同型· 修③族）；上限口径常态实耗零差
 								temperature: 0.2,
 								stream: false,
 							}),
@@ -4251,20 +4417,27 @@ module.exports = {
 		//    autoLatestPrompt 过期改按捕获时点 v.at 判（治原「无 cache 即删」误清 claimed→assemble 窗口新令）；bindMap 同扫（bd.at）。
 		function sweepExpiredAccounts() {
 			try {
+				let sweptAny = false; // 件三车病灶2：清账标记——原尾部每轮 force 绕 D15 节流（写放大回潮）·实际清账才强制
 				const cutoff = Date.now() - 2 * 3600_000;
 				for (const [k, v] of autoLatestPrompt) {
 					if ((v && v.at ? v.at : 0) < cutoff) {
 						autoLatestPrompt.delete(k);
-						autoRecallCache.delete(k);
+							autoRecallCache.delete(k);
+							sweptAny = true;
 					}
 				}
 				for (const [k, bd2] of bindMap) {
-					if (bd2.at && bd2.at < cutoff) bindMap.delete(k);
+					if (bd2.at && bd2.at < cutoff) {
+						bindMap.delete(k);
+						sweptAny = true;
+					}
 				}
 				for (const [k, cn] of compactionBySid) {
 					// 09-03 压缩桥伴扫：bind/pending 双无=会话已散 → 计数清（防 Map 无界·bindMap 同闸同窗）
-					if (!bindMap.has(k) && !pendingBySid.has(k))
+					if (!bindMap.has(k) && !pendingBySid.has(k)) {
 						compactionBySid.delete(k);
+						sweptAny = true;
+					}
 				}
 				for (const [k, a] of pendingBySid) {
 					if (a.lastTs && Date.now() - a.lastTs > 2 * 3600_000) {
@@ -4293,10 +4466,14 @@ module.exports = {
 									);
 								}
 							})(); // step 脑追办①：I6b 空 catch 补出口（⑬ 立法当日漏一枝·脑认账件）
-						} else pendingBySid.delete(k);
+						} else {
+							pendingBySid.delete(k);
+							sweptAny = true;
+						}
 					}
 				} // 2h 无新消息的分账清（防 Map 无界·审计死语句修正版）
-				a25Flush(true); // A-25：清账后强制落盘（持久层同步）
+				if (sweptAny)
+					a25Flush(true); // A-25：清账后强制落盘（件三车病灶2：实际清账才 force——每轮 force 与 D15 节流矛盾根治）
 			} catch (e) {
 				stats.sweepErrors = (stats.sweepErrors || 0) + 1;
 				ctx.logger?.warn?.(
@@ -4763,6 +4940,24 @@ module.exports = {
 							A.some((x) => !B.includes(x)) && B.some((x) => !A.includes(x))
 						);
 					};
+					// ── 614 词面二层（09-09 maintainer·深挖专项案①· 案底）：复合专名型冲突的 title 差异守卫 ──
+					//    根因链（深挖settled 09:4x）：614 型=实体抽取漏中文复合专名→diffExclEntities 差集空→family 误立案；
+					//    首版判据（token 集差集）在生产 jieba 形态下过强——gateKeywords max=12 截断使相似题词集
+					//    异位截断·人为双侧独占→全豁免→family 段零立案（「五形态玄学」实为此·eval 误判系 jieba
+					//    加载失败退化 bigram 形态）。修法=全文包含判独占：词（≥2 字）不作为子串出现在对方 title
+					//    全文才算独占——「补遗/安全」类修饰差与截断差皆非独占·「澜沧江/怒江」类真专名独占成立。
+					//    ⚠ 只挂 family 段——semantic 段词面本可不重叠·挂=废判据。漏立（盘账兜底）＜误立（人工噪音）。
+					const titleDiffExcl = (tA, tB) => {
+						const a = String(tA),
+							b = String(tB);
+						const A = gateKeywords(tA, 12),
+							B = gateKeywords(tB, 12);
+						if (A.length === 0 || B.length === 0) return false;
+						return (
+							A.some((x) => x.length >= 2 && !b.includes(x)) &&
+							B.some((x) => x.length >= 2 && !a.includes(x))
+						);
+					};
 					for (const r of rows) {
 						// exact 判定（原静默段捕获面原样改道）
 						const key = r.type + "\u0000" + r.title;
@@ -4814,6 +5009,8 @@ module.exports = {
 								if (sysAutoOf(grams[i].title) && sysAutoOf(grams[j].title))
 									continue; // 七小件⑤：双侧系统自动条互撞豁免
 								if (diffExclEntities(grams[i].id, grams[j].id)) continue; // 七小件⑦：实体差异守卫（cid613 假阳根治）
+
+								if (titleDiffExcl(grams[i].title, grams[j].title)) continue; // 614 词面二层（深挖修后回挂）：全文包含判独占——真专名差豁免·修饰差不豁免
 								const nid = Math.max(grams[i].id, grams[j].id),
 									oid = Math.min(grams[i].id, grams[j].id);
 								// 8-31 锈面修（审计片6①a）：E3 resolved 幂等声明与码不符——已裁决（resolved/approved/executed）对每夜重立流水单。
@@ -4845,6 +5042,11 @@ module.exports = {
 					try {
 						if (!process.env.LEGION_SEMANTIC_DEDUP_OFF) {
 							const a10Excl = [...mergeIds]; // S1 同修：空集→无 NOT IN 子句（原 'NULL' 兜底=NOT IN (NULL) 恒假死路·声明上提后仍死·两处合医才活）
+							try { // 件三车病灶6（09-09·三轮审计 §4.5）：mergeIds 填点（①精确/②高相似段）在 A-10 之后=恒空集·排除意图死——SQL 直查 pending 对补排除集（exact/family 已立案的 id 不进 A-10·防同对双立案·语义对齐零段序改动）
+								for (const pc of db.prepare("SELECT new_id, old_id FROM conflicts WHERE status = 'pending'").all()) {
+									a10Excl.push(pc.new_id, pc.old_id);
+								}
+							} catch {}
 							const vecRows = db
 								.prepare(`SELECT v.id, v.embedding FROM memories_vec v JOIN memories m ON m.id = v.id
                 WHERE v.model_version = ? AND m.status = 'active'${a10Excl.length ? ` AND m.id NOT IN (${a10Excl.map(() => "?").join(",")})` : ""}`)
@@ -5281,6 +5483,7 @@ module.exports = {
 					if (!cp || !cp.contextWindow) continue;
 					// E stale 过滤（09-08 brainreceipt建议·🟠采纳）：mtime>48h 死档不计入高压告警（09-05 seed 残留「脑升级77%」型）——历史高压单列
 					const stale = ent.mtimeMs && Date.now() - ent.mtimeMs > 48 * 3600e3;
+					if (stale) continue; // 余件item一（09-09·三轮审计 §4.4-6 亲验实锤）：原只打 stale 标不过滤——死档仍入 aged 计数·补 continue 落实注释承诺
 					// B 假零兜底（09-08 brain报障）：pressure=0||<surface（失败请求打空）→ surfaceTokens 下限——「变绿」比假绿更危险
 					const base =
 						(cp.pressureTokens || 0) === 0 ||
@@ -6167,15 +6370,7 @@ module.exports = {
 					const pc = pcPath.endsWith("session_projcache.json")
 						? projcacheRows()
 						: JSON.parse(fs2.readFileSync(pcPath, "utf8")); // 庚刀修⑤（09-08 审计）：默认路径走 v5 双源 Map（旧单文件 stale 半盲）；drill 假投影旋钮（LEGION_SENTINEL_PROJCACHE 指定文件）仍直读
-					const walkEnt = (ent) => {
-						walkPc(ent?.rows || {}, "");
-						walkPc(ent?.identity || {}, "");
-					};
-					if (pc instanceof Map) {
-						for (const ent of pc.values()) walkEnt(ent);
-						pcCount = pcCount;
-					}
-					const PATH_KEYS = /^(cwd|workspace|workdir|rootdir|path)$/i;
+					const PATH_KEYS = /^(cwd|workspace|workdir|rootdir|path)$/i; // 第三轮审计修（09-09 pending ruling②·TDZ 根治）：两声明上提至 walkEnt 消费前——原序 walkEnt 体内调 walkPc/PATH_KEYS 于 const 声明前=每夜 TDZ ReferenceError 被 catch 吞成「projcache 不可读」假警报（庚刀修⑤自伤·假绿族同族）
 					const walkPc = (o, parentKey) => {
 						if (o && typeof o === "object") {
 							for (const [k, v] of Object.entries(o)) {
@@ -6189,6 +6384,13 @@ module.exports = {
 							}
 						}
 					};
+					const walkEnt = (ent) => {
+						walkPc(ent?.rows || {}, "");
+						walkPc(ent?.identity || {}, "");
+					};
+					if (pc instanceof Map) {
+						for (const ent of pc.values()) walkEnt(ent);
+					}
 					if (!(pc instanceof Map)) walkPc(pc, ""); // Map 态已逐 ent 走（修⑤）
 				} catch {
 					alarms.push("projcache 不可读");
@@ -6737,8 +6939,8 @@ module.exports = {
 							let rowsA = [];
 							if (matchA) {
 								const ftsBaseA = `SELECT m.*, bm25(memories_fts) AS rank FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
-                 WHERE memories_fts MATCH ? AND m.status = 'active'
-                   AND m.ts <= ? AND COALESCE(m.closed_at, '9999') > ? AND COALESCE(m.valid_to, '9999') > ?`;
+                 WHERE memories_fts MATCH ? AND m.status IN ('active','merged','done')
+                   AND m.ts <= ? AND COALESCE(m.closed_at, '9999') > ? AND COALESCE(m.valid_to, '9999') > ?`; // step+三案修补案2（09-09 approved）：候选池放宽纳 merged/done——时点窗按 closed_at 自然排除 as_of 后闭环（as_of 前仍活的闭环条正确回流）；**时点语义不沉底**（×0.1=用后见之明改写历史·违 as_of「还原当时」本义）——只透出纯标注给现状线索
 								rowsA = db
 									.prepare(
 										ftsBaseA +
@@ -6777,6 +6979,18 @@ module.exports = {
 									score: Math.round(s.w * 1000) / 1000,
 									base: Math.round(s.base * 1000) / 1000,
 									decay: s.decay,
+									...(s.row.superseded_by != null
+										? { supersededBy: s.row.superseded_by }
+										: {}), // 三案修补案2：纯标注不降权——时点上当时仍活·后见之明不改写历史排序（render ↖标自然消费）
+									...(s.row.status === "done"
+										? {
+												doneMark:
+													"办结" +
+													(s.row.closed_at
+														? " " + String(s.row.closed_at).slice(0, 10)
+														: ""),
+											}
+										: {}), // 三案修补案2：办结标同款纯标注
 									content: String(s.row.content).slice(0, 200),
 								})),
 								total: weightedA.length,
@@ -6820,7 +7034,7 @@ module.exports = {
 							const match = queryMatch(tokens);
 							if (match) {
 								const ftsBase = `SELECT m.*, bm25(memories_fts) AS rank FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
-                 WHERE memories_fts MATCH ? AND m.status = 'active'`;
+                 WHERE memories_fts MATCH ? AND m.status IN ('active','merged','done')`; // step：候选池放宽纳 merged/done——语义性死亡/办结历史可回查（加权段 ×0.1 沉底/仅标·aged 仍硬排除）
 								let ftsRows;
 								if (callerSpace) {
 									// 段一：硬过滤this space+global（LIMIT 100）
@@ -6879,7 +7093,13 @@ module.exports = {
 									for (const id of vecIds) {
 										if (inFts.has(id)) continue;
 										const row = ph.get(id);
-										if (row && row.status === "active") {
+										if (
+											row &&
+											(row.status === "active" ||
+												row.status === "merged" ||
+												row.status === "done")
+										) {
+											// step：vec 独有行同放宽（与 FTS 候选池一致）
 											const vb = (rrfBoost.get(id) || 0) * 5;
 											rows.push({ row, base: vb, ftsBase: 0, vecPart: vb });
 										} // step：vec 独有命中=纯语义列
@@ -6894,7 +7114,7 @@ module.exports = {
 										const inRows = new Set(rows.map((r) => r.row.id));
 										const spCands = db
 											.prepare(
-												"SELECT * FROM memories WHERE status='active' AND spoken_prefix IS NOT NULL AND spoken_prefix != ''",
+												"SELECT * FROM memories WHERE status IN ('active','merged','done') AND spoken_prefix IS NOT NULL AND spoken_prefix != ''", // step：spoken 路候选池同放宽
 											)
 											.all();
 										const scored = [];
@@ -6928,7 +7148,7 @@ module.exports = {
 							qTokensShared = words; // optionoption：兜底路同外提（席内加成不因 FTS 异常缺席）
 							const scan = db
 								.prepare(
-									"SELECT * FROM memories WHERE status = 'active' ORDER BY id DESC LIMIT 500",
+									"SELECT * FROM memories WHERE status IN ('active','merged','done') ORDER BY id DESC LIMIT 500", // step：scan 兜底路候选池同放宽（FTS 降级时行为一致）
 								)
 								.all();
 							rows = [];
@@ -7080,8 +7300,23 @@ module.exports = {
 								staleValidTo += 1; // 独立计数·不混入 staleTodos
 								continue;
 							} // 已失效沉底·标 ⏦（valid_to 前缀·与 #closedBy/#newerFact 区分）
+							// ── step（09-08 maintainer·召回状态化）：召回面消费状态列（洞①·改判③系数分档）──
+							//    superseded_by 非空（merged·语义性死亡）→ ×0.1 沉底+supersededBy 字段——比 valid_to ×0.2 更狠（被取代是比时间旧更强的信号）·防同内容双召回·保留回查可见性；
+							//    status='done'（todo 办结历史）→ 仅标不降权——语义不同质：办结回查正当（注入面/autoRecall 已滤 active·零干扰）。
+							if (r.row.superseded_by != null) {
+								r.w *= 0.1;
+								r.supersededBy = r.row.superseded_by;
+								continue;
+							}
+							if (r.row.status === "done")
+								r.doneClosed = String(r.row.closed_at || "").slice(0, 10);
 							if (r.row.type === "todo" && r.row.status === "active") {
-								const cc = closureCheck(db, r.row.title, r.row.content); // P1 事件钟锚随②退役（C案·同日判断影响面已消）
+								const cc = closureCheck(
+									db,
+									r.row.title,
+									r.row.content,
+									r.row.id,
+								); // step：边判定前置（P1 事件钟锚随②退役·C案·同日判断影响面已消）
 								if (cc.closed) {
 									r.w *= 0.2;
 									r.stale = "#" + cc.by;
@@ -7177,7 +7412,7 @@ module.exports = {
 								const ph = db.prepare("SELECT * FROM memories WHERE id = ?");
 								for (const pid of idList) {
 									const row = ph.get(pid);
-									if (!row || row.status !== "active") continue;
+									if (!row || row.status !== "active") continue; // 三案修补案3（09-09 approved）：enrich 注入面保持 active-only——范围决策非漏改（注入行在此后进入·不过主路 sink·同放宽须自带沉底·故不放宽）
 									const pp = pprMap ? pprMap.get(pid) || 0 : 0;
 									if (pprMap && pp <= 0.02) continue; // A-03：远伙伴不注入（治灌水·gm 高精门同精神）；无图回落旧平权
 									const dec = decayOf(row);
@@ -7225,7 +7460,7 @@ module.exports = {
 									const ph3 =
 										db.prepare(`SELECT m.* FROM memories m JOIN memories_entities me ON me.memory_id = m.id
                   WHERE me.entity_id = ? AND m.status = 'active' AND m.id NOT IN (${baseIds.map(() => "?").join(",") || "NULL"})
-                  ORDER BY m.id DESC LIMIT ?`);
+                  ORDER BY m.id DESC LIMIT ?`); // 三案修补案3：实体 hop 注入面保持 active-only（范围决策非漏改·同 cooccur 伙伴面理由）
 									for (const er of entRows) {
 										if (entityInjected >= Math.min(shortfall, 3)) break;
 										for (const row of ph3.all(
@@ -7280,7 +7515,7 @@ module.exports = {
 										.prepare(`SELECT m.* FROM memory_communities mc JOIN memories m ON m.id = mc.mem_id
                   WHERE mc.community IN (${cl.map(() => "?").join(",")}) AND m.status='active'
                   AND m.id NOT IN (${weighted.map(() => "?").join(",")})${spaceFilter}
-                  ORDER BY mc.is_rep DESC, m.id DESC LIMIT 3`)
+                  ORDER BY mc.is_rep DESC, m.id DESC LIMIT 3`) // 三案修补案3：社区泛化注入面保持 active-only（范围决策非漏改·同 cooccur 伙伴面理由）
 										.all(
 											...cl,
 											...weighted.map((r) => r.row.id),
@@ -7462,6 +7697,15 @@ module.exports = {
 												"）·检索降权",
 										}
 									: {}),
+								...(s.supersededBy !== undefined
+									? { supersededBy: s.supersededBy }
+									: {}), // step：被取代标（数据层字段· render 必消费）
+								...(s.doneClosed !== undefined
+									? {
+											doneMark:
+												"办结" + (s.doneClosed ? " " + s.doneClosed : ""),
+										}
+									: {}), // step：办结仅标（不降权·回查正当）
 								content: String(s.row.content).slice(0, 200),
 							})),
 							total: weighted.length,
@@ -7797,13 +8041,16 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							/^## 20\d{2}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*\[\w+\]\s*/;
 						const rowTitleX = String(row.title)
 							.replace(/^20\d{2}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*\[\w+\]\s*/, "")
-							.replace(/（(?:active|aged|retired|resolved)） (?=\[#\d+\]$)/, "")
-							.trim();
+							.replace(
+								/（(?:active|aged|retired|resolved|merged|superseded)） (?=\[#\d+\]$)/,
+								"",
+							)
+							.trim(); // 余件item二（09-09·三轮审计 §4.4-1）：剥缀集对齐——原 (active|aged|retired|resolved) 漏 merged/superseded（入库剥缀集 L7303 单源有之）→手写区带缀条目三级匹配全失恒落回落窗·取并集六态归一
 						const lineTitleX = (l) =>
 							String(l)
 								.replace(evPrefix, "")
 								.replace(
-									/（(?:active|aged|retired|resolved)） (?=\[#\d+\]$)/,
+									/（(?:active|aged|retired|resolved|merged|superseded)） (?=\[#\d+\]$)/,
 									"",
 								)
 								.trim();
