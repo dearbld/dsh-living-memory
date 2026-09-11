@@ -1,6 +1,6 @@
 {
   "name": "dsh-living-memory",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Living memory for DeepSeek Harness — self-tending knowledge base: nightly patrol, temporal decay, RRF hybrid recall, knowledge graph, telemetry. Built by 暖暖 (NuanNuan).",
   "main": "index.cjs",
   "type": "commonjs",

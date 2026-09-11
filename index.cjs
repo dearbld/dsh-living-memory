@@ -494,6 +494,9 @@ function memoryRender(args, value) {
 			_t("g2归档错", v.g2ArchiveErrors);
 			_t("mirrorWm错", v.mirrorWmErrors);
 			_t("召回错", v.autorecallErrors);
+			_t("专名救", v.autorecallPnRescue);
+			_t("主题词救", v.autorecallKwRescue);
+			_t("vec兜底", v.autorecallVecFallback); // 柱环4/梁4 预备：自动召回三路救援触发数 render 消费补齐（原 KwRescue/VecFallback 有 return 无 render=模型不可见·PnRescue 连 return 都缺·2026-09-11 同车补齐·⑬ 四点接线）
 			_t("高压错", v.pressureAlertErrors);
 			_t("重抽拦", v.extractDupSkipped);
 			_t("signal错", v.signalErrors);
@@ -566,6 +569,13 @@ function memoryRender(args, value) {
 					"] " +
 					(a.title || ""),
 			);
+			if (v.softWarn)
+				lines.push(
+					"⚠ " +
+						(Array.isArray(v.softWarn)
+							? v.softWarn.join("；")
+							: String(v.softWarn)),
+				); // render 族第三例修复（09-10·/ 后）：softWarn 数据面在而 render 不画=模型不可见——P1-2/C 档 08-24 起+链回提示 09-10 起同哑·本行激活全族
 			if (v.reflectLink)
 				lines.push(
 					"🪡 写入即反思：链到 #" +
@@ -2011,6 +2021,52 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						"」缺行为位——无行为位不算教训（checklist/闸位/口径居一），建议补「行为位：XXX」";
 					cGateHint = cGateHint ? cGateHint + "；" + p12 : p12;
 				}
+				// ── 复犯链回软提示（design-approved
+				//    零阻断（首犯合法无边照常入库）·与 P1-2/C 档同构；治 51.3% 无边面的「忘了链」部分（8-31 hard rule机械闸化）
+				if (
+					String(args.type) === "lesson" &&
+					!(Array.isArray(args.relatedIds) && args.relatedIds.length > 0)
+				) {
+					const relHint =
+						"链回提示：lesson 无 relatedIds——若为复犯必链回原条（relatedIds 参数·复犯链回hard rule 8-31·边入度=真复犯计数）";
+					cGateHint = cGateHint ? cGateHint + "；" + relHint : relHint;
+				}
+				// ── 梁 1 写入面·可召回性闸（design-approved
+				//    缺口背景：五梁唯一整项空白（第四轮审计报告 §二/§五：码面 grep「可召回性/titleQuality/recallGate」零命中）
+				//    判据双面：①title 过短（去空白 <8 字）或泛词主导（去泛词/标点后 <8 实义字）——日后召回无抓手
+				//              ②content 首句过短（<12 字）——摘要不自含，命中后无上下文可判
+				//    阈值标定＝真库 150 条样本实测（title 最短 8 字／首句最短 15 字 ⇒ 双侧零误伤·2026-09-11 本窗标定）
+				//    零阻断（「度量不代裁」精神·提示而非拦截）·守写路快径（纯字符串判断·零 DB 查询·不做 tokenize）
+				if (args.title || args.content) {
+					const _recallTitleRaw = String(args.title || "").trim();
+					const _recallTitleTight = _recallTitleRaw.replace(/\s/g, "");
+					const _recallCore = _recallTitleTight
+						.replace(/[\p{P}\p{S}]/gu, "")
+						.replace(
+							/已?(完成|办毕|办结|完结|wrap-up|更新|记录|说明|情况|事项|内容|工作|小结|汇总|总结|备忘|备注|处理|日常|杂项|其他|临时|测试|验证|整理|自查)/g,
+							"",
+						);
+					const _recallFirst = String(args.content || "")
+						.split(/[。！？!?；;\n]/)[0]
+						.replace(/\s/g, "");
+					if (_recallTitleTight.length < 8 || _recallCore.length < 8) {
+						const rHint =
+							"可召回性提示：title「" +
+							_recallTitleRaw.slice(0, 24) +
+							"」缺检索抓手（过短或泛词主导）——建议补主题词/专名/编号，否则日后搜不回（梁 1 闸·提示不阻断）";
+						cGateHint = cGateHint ? cGateHint + "；" + rHint : rHint;
+					}
+					if (
+						String(args.content || "").trim().length > 0 &&
+						_recallFirst.length < 12
+					) {
+						const crHint =
+							"可召回性提示：content 首句过短（" +
+							_recallFirst.length +
+							" 字）——建议首句自含摘要（结论/编号/出处），命中后才有上下文（梁 1 闸·提示不阻断）";
+						cGateHint = cGateHint ? cGateHint + "；" + crHint : crHint;
+					}
+				}
 				const ts = nowIso();
 				const title = stripUrls(String(args.title));
 				const content = stripUrls(String(args.content));
@@ -2837,11 +2893,30 @@ module.exports = {
 						//    归属失联兜底维持原全库顺序两席行为。
 						const todos = [];
 						const pickedTk = [];
+						// ── 预算化注入·闲时扩容（design-approved
+						//    闲=<40% 压力（pressureTokens 假零面用 surfaceTokens 下限·庚刀同防）→fact 3→5/todo 2→4；非闲维持原值零变（不收缩·maintainer）
+						const factCap = (() => {
+							try {
+								const cp = projcacheRows().get(String(sid || ""))?.rows
+									?.contextPressure?.val;
+								if (!cp) return 3;
+								const used =
+									(cp.pressureTokens || 0) > 0
+										? cp.pressureTokens
+										: cp.surfaceTokens || 0;
+								const win = cp.contextWindow || 1000000;
+								return used / win < 0.4 ? 5 : 3;
+							} catch {
+								return 3;
+							}
+						})();
+						const todoCap = factCap >= 5 ? 4 : 2;
+
 						const pickTodo = (cands, quota) => {
 							// 从一池内按序挑 quota 席（closureCheck 验真+同义查重跨池全局生效）
 							let n = 0;
 							for (const td of cands) {
-								if (n >= quota || todos.length >= 2) break;
+								if (n >= quota || todos.length >= todoCap) break;
 								if (
 									closureCheck(db, td.title, td.content, td.id).closed // step：todo 席带 id——solved_by 边前置判定（洞②根治· 型僵尸不再回流）
 								)
@@ -2866,7 +2941,7 @@ module.exports = {
 										"SELECT id, type, title, content, ts FROM memories WHERE status='active' AND type='todo' AND space = ? ORDER BY id DESC LIMIT 6",
 									)
 									.all(injectCallerSpace),
-								1,
+								todoCap >= 4 ? 2 : 1,
 							); // 本空间席（审计修正 20:58：残留 callerSpace 致恒空已修；件②池保 DESC·ASC 在 todos 组装后做）
 							pickTodo(
 								db
@@ -2874,7 +2949,7 @@ module.exports = {
 										"SELECT id, type, title, content, ts FROM memories WHERE status='active' AND type='todo' AND space='global' ORDER BY id DESC LIMIT 4",
 									)
 									.all(),
-								1,
+								todoCap >= 4 ? 2 : 1,
 							); // global 席（硬配额·directive型不被本空间挤占；件②池保 DESC）
 						} else {
 							pickTodo(
@@ -2883,7 +2958,7 @@ module.exports = {
 										"SELECT id, type, title, content, ts FROM memories WHERE status='active' AND type='todo' ORDER BY id DESC LIMIT 12",
 									)
 									.all(),
-								2,
+								todoCap,
 							); // 归属失联兜底：全库顺序两席（件②池保 DESC）
 						}
 						todos.reverse(); // item append-only：todo 席 ASC 终态（池保 DESC 取最新+去重原语义·选中后旧→新显示：新待办尾部追加不移动旧条目）
@@ -2900,7 +2975,9 @@ module.exports = {
 						const ownRows = injectCallerSpace
 							? db
 									.prepare(
-										"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND space = ? AND COALESCE(event_at, ts) >= ? ORDER BY id DESC LIMIT 2",
+										"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND space = ? AND COALESCE(event_at, ts) >= ? ORDER BY id DESC LIMIT " +
+											(factCap - 1) +
+											"",
 									)
 									.all(injectCallerSpace, past48h)
 									.reverse()
@@ -2920,13 +2997,15 @@ module.exports = {
 							: []; // #22 常驻核心席（帽 3·按验证度·不占 48h 闸席——wb essence 常驻意）
 						const gPool = db
 							.prepare(
-								"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND space='global' AND COALESCE(event_at, ts) >= ? AND NOT (title LIKE '%收官%' OR title LIKE '%全绿%' OR title LIKE '%完成%' OR title LIKE '%闭环%') ORDER BY id DESC LIMIT 3",
+								"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND space='global' AND COALESCE(event_at, ts) >= ? AND NOT (title LIKE '%收官%' OR title LIKE '%全绿%' OR title LIKE '%完成%' OR title LIKE '%闭环%') ORDER BY id DESC LIMIT " +
+									(factCap + 1) +
+									"",
 							)
 							.all(past48h); // P1 事件钟锚（池保 DESC：slice(0,n) 取最新 n 原语义·件② ASC 在组装处做）：同 ownRows 口径；8-31 长尾乙档（F2-7）：LIMIT 2→3——原池深 2 与 slice 上限 3 打架致 ownRows=0 时第三席恒空（本空间静默窗口 global 视野少 1 条）
 						const rows = [
 							...ownRows, // 件② ASC：本空间席旧→新（新条目尾部追加）
 							...gPool.slice(0, 3 - ownRows.length).reverse(), // 件②：global 池 DESC 取最新 n·再转 ASC 追加在后
-						].slice(0, 3);
+						].slice(0, factCap); // 刀B：闲时 5 席·常时 3（池深 factCap+1 保 F2-7 语义）
 						// ── 8-31 option：nudge 消费段上提至案A 判定前（原居案A return 后——归属失联态/空库态恒遮蔽·caught in drill）——
 						//    案A 兜底路与正常路共享同一消费点：失联恢复窗恰是最需纪律提示的场景。
 						let nudgeText = "";
@@ -3039,8 +3118,18 @@ module.exports = {
 								"awaiting approval",
 								"awaiting approval",
 								"裁决",
+							]; // 0.2.0 余件 ORD 泛化（09-10 approved）：英文会话directive型 todo 顶替通道——英文分支短语级（防 request 泛词误伤）·与三词表英文化同型
+							const ORD_WORDS_EN = [
+								"\\bawaiting approval\\b",
+								"\\bpending approval\\b",
+								"\\bapproval request\\b",
+								"\\bfor approval\\b",
+								"\\bsubmitted for review\\b",
 							];
-							const ORD_TODO_RE = new RegExp(ORD_WORDS.join("|"));
+							const ORD_TODO_RE = new RegExp(
+								ORD_WORDS.concat(ORD_WORDS_EN).join("|"),
+								"i",
+							); // i flag：英文短语大小写不敏感（中文词不受影响）·SQLite LIKE 对 ASCII 天然不敏感=SQL 侧免 COLLATE
 							if (
 								todos.length >= 1 &&
 								!todos.some((x) => ORD_TODO_RE.test(x.title))
@@ -3048,7 +3137,9 @@ module.exports = {
 								const ord = db
 									.prepare(
 										"SELECT id, title, ts FROM memories WHERE status='active' AND type='todo' AND (" +
-											ORD_WORDS.map((w) => `title LIKE '%${w}%'`).join(" OR ") +
+											ORD_WORDS.concat(ORD_WORDS_EN)
+												.map((w) => `title LIKE '%${w.replace(/\\\\b/g, "")}%'`)
+												.join(" OR ") +
 											") ORDER BY id DESC LIMIT 1",
 									)
 									.get();
@@ -4422,8 +4513,8 @@ module.exports = {
 				for (const [k, v] of autoLatestPrompt) {
 					if ((v && v.at ? v.at : 0) < cutoff) {
 						autoLatestPrompt.delete(k);
-							autoRecallCache.delete(k);
-							sweptAny = true;
+						autoRecallCache.delete(k);
+						sweptAny = true;
 					}
 				}
 				for (const [k, bd2] of bindMap) {
@@ -4472,8 +4563,7 @@ module.exports = {
 						}
 					}
 				} // 2h 无新消息的分账清（防 Map 无界·审计死语句修正版）
-				if (sweptAny)
-					a25Flush(true); // A-25：清账后强制落盘（件三车病灶2：实际清账才 force——每轮 force 与 D15 节流矛盾根治）
+				if (sweptAny) a25Flush(true); // A-25：清账后强制落盘（件三车病灶2：实际清账才 force——每轮 force 与 D15 节流矛盾根治）
 			} catch (e) {
 				stats.sweepErrors = (stats.sweepErrors || 0) + 1;
 				ctx.logger?.warn?.(
@@ -5042,8 +5132,13 @@ module.exports = {
 					try {
 						if (!process.env.LEGION_SEMANTIC_DEDUP_OFF) {
 							const a10Excl = [...mergeIds]; // S1 同修：空集→无 NOT IN 子句（原 'NULL' 兜底=NOT IN (NULL) 恒假死路·声明上提后仍死·两处合医才活）
-							try { // 件三车病灶6（09-09·三轮审计 §4.5）：mergeIds 填点（①精确/②高相似段）在 A-10 之后=恒空集·排除意图死——SQL 直查 pending 对补排除集（exact/family 已立案的 id 不进 A-10·防同对双立案·语义对齐零段序改动）
-								for (const pc of db.prepare("SELECT new_id, old_id FROM conflicts WHERE status = 'pending'").all()) {
+							try {
+								// 件三车病灶6（09-09·三轮审计 §4.5）：mergeIds 填点（①精确/②高相似段）在 A-10 之后=恒空集·排除意图死——SQL 直查 pending 对补排除集（exact/family 已立案的 id 不进 A-10·防同对双立案·语义对齐零段序改动）
+								for (const pc of db
+									.prepare(
+										"SELECT new_id, old_id FROM conflicts WHERE status = 'pending'",
+									)
+									.all()) {
 									a10Excl.push(pc.new_id, pc.old_id);
 								}
 							} catch {}
@@ -5147,6 +5242,28 @@ module.exports = {
 								"SELECT conflict_id, new_id, old_id FROM conflicts WHERE status = 'approved' AND decided_at IS NOT NULL",
 							)
 							.all();
+						// ── 刀A both-valid 第四态（design-approved
+						//    不合并（条目双活·as_of 各自正确·检索天然支持）·边=检索面关联可见（A-18 conflicts_with 型）；E3 查重豁免天然兼容（非 pending 不重立）；executed 复用=执行器已处理终态
+						try {
+							const bothValidRows = db
+								.prepare(
+									"SELECT conflict_id, new_id, old_id FROM conflicts WHERE status = 'both-valid'",
+								)
+								.all();
+							for (const bv of bothValidRows) {
+								try {
+									db.prepare(
+										"INSERT INTO memories_edges (src, dst, edge_type, weight, valid_at, last_seen, instruction) VALUES (?, ?, 'conflicts_with', 0.5, ?, ?, 'both-valid 不可约对·两者都对·as_of 各自正确') ON CONFLICT(src, dst, edge_type) DO UPDATE SET last_seen = excluded.last_seen",
+									).run(bv.new_id, bv.old_id, nowIso(), nowIso());
+									db.prepare(
+										"UPDATE conflicts SET status = 'executed', decided_by = COALESCE(decided_by, 'patrol-executor-bothvalid') WHERE conflict_id = ?",
+									).run(bv.conflict_id);
+									stats.bothValidLinked = (stats.bothValidLinked || 0) + 1;
+								} catch {
+									stats.bothValidErrors = (stats.bothValidErrors || 0) + 1;
+								}
+							}
+						} catch {}
 						let executed = 0,
 							edgesMigrated = 0;
 						for (const ap of approvedRows) {
@@ -8379,10 +8496,13 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							nudgeTotalShown: readNudgeTotal("nudge_shown_total"),
 							nudgeTotalFollowed: readNudgeTotal("nudge_followed_total"), // 3 天窗刀（09-06 批）：两率跨重启累计（organ_meta）·观测窗 3 天期满escalate
 							nudgePersistErrors: stats.nudgePersistErrors || 0,
+							autorecallPnRescue: stats.autorecallPnRescue || 0, // 柱环4/梁4 预备：专名救援路触发数（**原零出口**——L4696 自增而 return/render 双缺·⑬「四点接线」违反·2026-09-11 接续窗补齐）
 							autorecallKwRescue: stats.autorecallKwRescue || 0,
 							autorecallVecFallback: stats.autorecallVecFallback || 0, // option：主题词重查救回/vec 近邻兜底命中计数
 							injectErrors: stats.injectErrors || 0, // 8-31 锈面修④：注入段兜底失败计数（F2-2 吞错出口透出）
 							a25ChaseErrors: stats.a25ChaseErrors || 0, // 甲批⑩ I6b chase 失败数
+							bothValidLinked: stats.bothValidLinked || 0, // 刀A：不可约对建边数
+							bothValidErrors: stats.bothValidErrors || 0, // 刀A：both-valid 处理失败数
 							a25FlushErrors: stats.a25FlushErrors || 0, // 锁面连环透出（09-04 对账红⑥·原仅 warn 日志·⑬ 同法）
 							// ── 09-03 压缩↔living memory联动桥·五键透出（⑬ 纪律：计数不可见=半合规）──
 							compactionSeen: stats.compactionSeen || 0, // 刀② end 捕获（成功压缩次数）
