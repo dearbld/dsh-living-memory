@@ -19,12 +19,12 @@ const { execFileSync } = require("node:child_process"); // nightly patrol在线�
 
 // ── step：沙箱开关。MEMORY_DB_PATH 设了→工具面读写指向该路径；未设→正库。
 //    全链（含nightly patrol/提炼/注入/面板）都走 DB_PATH——演练可整体重定向（第三轮审计修 L16 旧注释漂移：原称「内部管道永远走正库」不实）；
-//    文件写面（快照/G2/镜像/braininbox）随 DRILL_SANDBOX 总闸改道 /tmp，生产路径零接触。单一解析点，禁散落硬编码。──
+//    文件写面（快照/G2/镜像/brain inbox）随 DRILL_SANDBOX 总闸改道 /tmp，生产路径零接触。单一解析点，禁散落硬编码。──
 const DEFAULT_DB_PATH = path.join(
 	os.homedir(), ".dsh", "dsh-living-memory", "memory.sqlite3",
 );
 const DB_PATH = process.env.MEMORY_DB_PATH || DEFAULT_DB_PATH;
-// ── 第三轮审计pending ruling③（design-approved
+// ── 第三轮审计pending ruling③（design-approved）：DRILL_SANDBOX 总闸——沙箱库演练时文件写面缺省路径统一改道 /tmp ──
 //    治 G2 穿孔案（09-08 knife24 两跑覆写生产source of record+归档·9 月真卷 4023 条亡佚）：旋钮逐段手加无总闸=机制生命周期错位族根因。
 //    原则：drill 全链可测（写面不 skip 只改道）·生产零污染（沙箱库⇒文件全落 /tmp）；显式 LEGION_*_DIR 旋钮恒优先（drill 自定沙箱路径照走）。
 const DRILL_SANDBOX = DB_PATH !== DEFAULT_DB_PATH;
@@ -54,11 +54,11 @@ const EXTRACT_INTERVAL_MS = 5 * 60 * 1000; // 自动提炼限频：5 分钟
 const PATROL_START_HOUR = 2; // nightly patrol窗口 02:00–06:00(design note)
 const PATROL_END_HOUR = 6;
 const PATROL_CHECK_MS = 30 * 60 * 1000; // 每 30 分钟检查一次是否入窗
-// ── A-07 吸收刀（wave·design-approved
+// ── 吸收项（wave·design-approved「抽取模型定向 V4-Flash」）──
 // 官方 changelog 实证 ID：deepseek-v4-flash（2026-08-13 文本档上线·同端点同 key 零新凭据）。
 // 原 deepseek-chat 通用档 → Flash 低成本档；env LEGION_EXTRACT_MODEL 可覆（观察期灵活回退）。
 const EXTRACT_MODEL = process.env.LEGION_EXTRACT_MODEL || "deepseek-v4-flash";
-// ── issue#1 修②（design-approved
+// ── issue 修②（design-approved）：单次提炼请求应用级全局超时（ms·env 可调）──
 //    防慢速响应长持 extracting 互斥锁（Undici 默认 300s×2 只是兜底·四 attempts 最坏 20 分钟）；
 //    默认 120s 下四 attempts 最坏 8 分钟封顶。超时 abort 走既有 fetch fail → skip 路径。
 const EXTRACT_TIMEOUT_MS =
@@ -69,11 +69,11 @@ const SPOKEN_MODEL = process.env.LEGION_SPOKEN_MODEL || "deepseek-chat"; // 09-0
 //    缺省=deepseek-v4-pro（maintainer升档方向·A/B 对拍为验证环非前置闸；不达标 env 回退 flash 零码改）。
 const PREVERDICT_MODEL =
 	process.env.LEGION_PREVERDICT_MODEL || "deepseek-v4-pro";
-// ── item1：查询侧 instruct（design-approved
+// ── item1：查询侧 instruct（design-approved「同意」·官方step漏件补件）──
 //    探针实证（09-07 /tmp/probe-instruct.cjs 三臂·qwen3.7-text-embedding）：兼容模式 text_type 被
 //    忽略（cos=1.000000 向量未变）·instruct 生效（cos=0.951 显著偏移）——故只落 instruct 不落
 //    text_type（原生端点才支持·不为此换端点改请求体）。E5「query:」前缀官方等价·qwen3.7 指令
-//    遵循较 v4 +16.4%（官方文档）。文档侧（chunks 补嵌/nightly patrol回填/A-14 写时）一律不传——查询/文档
+//    遵循较 v4 +16.4%（官方文档）。文档侧（chunks 补嵌/nightly patrol回填/写时）一律不传——查询/文档
 //    不对称正形态。A/B：LEGION_INSTRUCT_OFF 回退·LEGION_INSTRUCT_TEXT 指令覆盖（扫描用）。
 const INSTRUCT_QUERY =
 	process.env.LEGION_INSTRUCT_TEXT ||
@@ -223,8 +223,8 @@ function loadDictData() {
 }
 const DICT = loadDictData();
 
-// ── wave#5 KNOWN_FIXES 修正表（design-approved
-//    已知幻觉/截断形态→修正字典·A-20 产边 prompt 伴生消费（LLM 产时即避）。失败降级空表。
+// ── wave KNOWN_FIXES 修正表（design-approved四车）：包内 known-fixes.json——
+//    已知幻觉/截断形态→修正字典·产边 prompt 伴生消费（LLM 产时即避）。失败降级空表。
 const KNOWN_FIXES = (() => {
 	try {
 		const d = JSON.parse(
@@ -243,7 +243,7 @@ const knownFixesHint = () =>
 		: "\n已知修正（产出时照此避错·勿产出左列错误形态）：\n" +
 			KNOWN_FIXES.map((f) => "- 「" + f.wrong + "」→「" + f.right + "」").join(
 				"\n",
-			); // wave#5：A-20 产边 prompt 伴生
+			); // wave：产边 prompt 伴生
 // ── Sensitive-topic gate (second layer, downstream of the credential scan) ──────
 // Entries matching GUARD.sensitive are kept OUT of auto-extraction and out of the
 // auto-recall injection surface: the automatic layer only ever emits reference-grade
@@ -303,7 +303,7 @@ function textBlock(value) {
 	return [{ type: "text", text: JSON.stringify(value, null, 2) }];
 }
 
-// ── 吸收item（design-approved
+// ── 吸收item（design-approved「逐项吸收」·mem0 truncateOutput 设计本地化）：工具输出硬帽 ──
 //    200 行 / 50KB，截断附说明行引导模型收窄查询——本窗之前我方无任何输出帽（09-02 01:49 grep 实勘）。
 const MAX_RENDER_LINES = 200;
 const MAX_RENDER_BYTES = 50 * 1024;
@@ -315,7 +315,7 @@ function capRenderText(text) {
 		return src;
 	let out = src;
 	if (totalBytes > MAX_RENDER_BYTES) {
-		// P2修#34（09-03 audit）：字节截断回退至 UTF-8 字符边界——原 subarray 硬切可腰斩多字节字符产出 U+FFFD 污染注入面
+		// P2 fix（09-03 audit）：字节截断回退至 UTF-8 字符边界——原 subarray 硬切可腰斩多字节字符产出 U+FFFD 污染注入面
 		const buf = Buffer.from(out, "utf8");
 		let cut = Math.min(MAX_RENDER_BYTES, buf.length);
 		while (cut > 0 && (buf[cut] & 0xc0) === 0x80) cut--; // 切点是 continuation 字节（10xxxxxx）→ 回退至本序列首字节前
@@ -332,7 +332,7 @@ function capRenderText(text) {
 	);
 }
 
-// ── 记忆召回可见化 render（design-approved
+// ── 记忆召回可见化 render（design-approved「同意」·回显step②）：工具卡人类可读——maintainer在流式区直接看见召回情景 ──
 function memoryRender(args, value) {
 	try {
 		const v = value || {};
@@ -349,7 +349,7 @@ function memoryRender(args, value) {
 					"·" +
 					(v.via || "?") +
 					(v.recallMode ? "·" + v.recallMode : "") +
-					(v.asOf ? "·🕰时点 " + v.asOf : "") + // #10：时点快照可视化——search 头带时点锚（与 recallMode as-of 并读）
+					(v.asOf ? "·🕰时点 " + v.asOf : "") + // 时点快照可视化——search 头带时点锚（与 recallMode as-of 并读）
 					"）",
 			);
 			for (const h of v.hits)
@@ -413,7 +413,7 @@ function memoryRender(args, value) {
 					v.total +
 					" 条活跃·最新 " +
 					v.entries.length +
-					(v.asOf ? "·🕰时点 " + v.asOf : "") + // #10：时点快照可视化——timeline 头带时点锚（10-D asOf 透出）
+					(v.asOf ? "·🕰时点 " + v.asOf : "") + // 时点快照可视化——timeline 头带时点锚（10-D asOf 透出）
 					"）",
 			);
 			for (const e of v.entries)
@@ -499,6 +499,16 @@ function memoryRender(args, value) {
 			_t("vec兜底", v.autorecallVecFallback); // 柱环4/梁4 预备：自动召回三路救援触发数 render 消费补齐（原 KwRescue/VecFallback 有 return 无 render=模型不可见·PnRescue 连 return 都缺·2026-09-11 同车补齐·⑬ 四点接线）
 			_t("高压错", v.pressureAlertErrors);
 			_t("重抽拦", v.extractDupSkipped);
+			_t("同文拦", v.dupWriteBlocked); // 梁1b 同文幂等闸：memory_write 同文重复拒写数（09-11 kimi 21 连发案治本件②·⑬ 四点接线齐）
+			_t("失效条", v.validToCount); // ⑬ 补（2026-09-11）：事件轴已到点失效条数原「有 return 无 render」＝半合规——本次 21 条污染沉底同车补，载入后 stats 面直接可见处置结果（验收证据位）
+			// ── ⑬ option补齐（design-approved「只补错误/拦截类」·共 6 键·逐字核自增点与语义后纳入）──
+			//    纳入口径＝「错误/拦截/告警」语义且有真自增点；**观测类不纳**（edgeYieldDeadKey「让位计数」/bothValidLinked/autoEdges/routedCount/spaceGatePassed/signalTriggered 等留盘点面）
+			_t("安检拒", v.rejectedCount); // 提炼路 security reject 数（自增 L3773）
+			_t("敏感跳", v.sensitiveSkipCount); // 敏感闸跳过数（自增 L3781）
+			_t("闸拦", v.spaceGateBlocked); // option空间闸拦截数（spaceGateCounts.blocked）
+			_t("双验错", v.bothValidErrors); // 刀A both-valid 处理失败数（自增 L5412）
+			_t("术跳总", v.surgerySkipCount); // 挂牌期跳过总数（自增 L3592/L4962——与既有「术跳嵌」「术跳写」同族补齐）
+			_t("语义冲", v.semanticConflictsFound); // 语义冲突发现数（L5250 赋值·告警面）
 			_t("signal错", v.signalErrors);
 			_t("buf恢复错", v.bufferRestoreErrors);
 			_t("validated错", v.validatedErrors);
@@ -530,7 +540,7 @@ function memoryRender(args, value) {
 			_t("社区簇", v.communitiesBuilt);
 			_t("Saga摘", v.sagaSummaries);
 			_t("Saga错", v.sagaSummaryErrors); // 件5 审计修①：render 透出补三标签（社区簇顺带补）
-			// #8 SelRoute：六类分布非零即显（⑬ 精神——观测面 render 可见·全零零扰动）
+			// SelRoute：六类分布非零即显（⑬ 精神——观测面 render 可见·全零零扰动）
 			if (v.queryClassDist) {
 				const qc = Object.entries(v.queryClassDist).filter(
 					([, n]) => Number(n) > 0,
@@ -585,14 +595,14 @@ function memoryRender(args, value) {
 						"」（jaccard " +
 						v.reflectLink.j +
 						"·auto-link 0.4）——A-MEM dynamic linking",
-				); // #19 stepstep
+				); // step
 			if (v.stampResult)
 				lines.push(
 					"⚠ 写时盖戳：旧条 #" +
 						v.stampResult.stamped +
 						" 标 superseded-auto（jaccard " +
 						v.stampResult.j +
-						"·否证词+数值变化·已立 conflicts 复核案）——wave#2",
+						"·否证词+数值变化·已立 conflicts 复核案）——wave",
 				);
 			if (v.closedTodo)
 				lines.push(
@@ -649,7 +659,7 @@ function jaccard(a, b) {
 // ══ step：分词器（读写同侧·对齐hard rule）══════════════════════════════════
 // 词级（jieba 可选）∪ CJK 二元组 ∪ 西文词，空格连接成 FTS5 tokens 文本。
 // 查询侧同一函数转 query——读写同 tokenize，永不对不上。
-// ── 刀 3 甲方案（design-approved
+// ── 刀 3 甲方案（design-approved）：jieba 2.x class 化适配 ──
 //    2.x 导出 class Jieba（无函数式 cut）——new Jieba() 空实例自带内置词库（dict 子包非必需·实测优于 npm dict）；
 //    loadDict feeds proper nouns from DICT (two layers, see above); on failure it degrades to jieba's built-in dictionary;
 //    1.x 函数式已停更(ops note)，本段为 2.x 唯一正路。
@@ -696,7 +706,7 @@ function queryMatch(tokens) {
 		: "";
 }
 
-// ── item（design-approved
+// ── item（design-approved「同意」）：查询构造实词优选——口语查询虚词 bigram（怎么/才能/为什么）挤占前 8 槽 ──
 //    致实词零交叠未上榜（spoken 诊断 20/24 未上榜实锤）。构造：jieba 实词（滤停用词/纯数字）优先+西文专名
 //    （option L1607 遗产守）+bigram 兜底补 8 槽。沙箱（eval-layer-qexp.cjs 同构尺）：spoken 12.5%→16.7%·lexical/term 零伤。
 const QUERY_STOP = new Set([
@@ -786,9 +796,9 @@ function qTokens(text) {
 	return slots.slice(0, 8);
 }
 
-// ── #8 SelRoute 六类路由正则版（wave·design-approved
+// ── SelRoute 六类路由正则版（wave·design-approved「同意」·观测版零权重变更）──
 //    六类：ss-user/ss-assistant（单会话用户/助手侧）·multi-session（跨窗）·knowledge-update（知识
-//    新鲜度）·temporal（A-23 词表单源复用）·other（兜底）。本期只分类+计数透出（stats.queryClassDist
+//    新鲜度）·temporal（词表单源复用）·other（兜底）。本期只分类+计数透出（stats.queryClassDist
 //    ·观测一周）——权重路由（如 ss-user→FTS 单路权重升·knowledge-update→spoken 加成升）候分布settled
 //    再pending approval，**不动排序链**。优先序=特异先泛化后（会话指向词＞知识新鲜度词＞泛时间词）——「上次」归
 //    temporal（多会话指向由 multi-session 特异词「他窗/上个会话」承担·重叠面预期内·观测期归因看此）。
@@ -827,8 +837,8 @@ function classifyQuery(q) {
 	return "other";
 }
 
-// ── 融合面·前缀命中加成（design-approved
-//    治「FTS 榜尾→融合 top5」晋席力不足（：前缀入索引后 FTS 单路 spoken 45.8% 而真链 16.7% 纹丝不动——
+// ── 融合面·前缀命中加成（design-approved·option乙主甲辅·方案稿=模块/创造/a companion script）──
+//    治「FTS 榜尾→融合 top5」晋席力不足（前缀入索引后 FTS 单路 spoken 45.8% 而真链 16.7% 纹丝不动——
 //    base=max(ftsBase,vecPart) 量纲被 vecPart×10 主导，榜尾 ftsBase≈0.3 对 vecPart 排1=3.33 十倍差救不回）。
 //    交叠判定=bigram 字面（前缀设计本义=字面桥）；双锚门：交叠词≥2 且至少 1 个不在高频名单（防「记录/那条」灌水）。
 const SPOKEN_BOOST = {
@@ -864,7 +874,7 @@ function spokenOverlap(prefix, tokens) {
 
 // ── item 生成器：LLM 口语前缀（DeepSeek 提炼同通道·DEEPSEEK_MEMORY_KEY·生产在产凭据）──
 //    产出形态=空格分隔口语短语串（入 spoken_prefix 列→au 触发器重嵌 FTS·bigram 化与查询 token 天然同粒度）。
-// ── 吸收item（design-approved
+// ── 吸收item（design-approved「记忆直接做」）：双轮异版并集——v2 寻址腔 ∪ v4d 翻译腔 ──
 //    沙箱实证：双轮并集过双锚门 45.8%（11/24）vs 单轮 25~33%（a companion script·三路由settled ）；
 //    单轮失败降级用另一轮产出，双败抛错（上层静默=nightly patrol回填兜底）；并集按短语去重后 200 字帽不变。
 const SP_PROMPT_V2 = (t, c) =>
@@ -888,7 +898,7 @@ async function llmSpokenPrefixOnce(prompt) {
 			Authorization: "Bearer " + spCredCache.v,
 		},
 		body: JSON.stringify({
-			model: SPOKEN_MODEL, // 裁③：env 分立（原硬编码·audit#27）
+			model: SPOKEN_MODEL, // 裁③：env 分立（原硬编码·audit）
 			messages: [{ role: "user", content: prompt }],
 			max_tokens: 200,
 			temperature: 0.4,
@@ -930,17 +940,17 @@ async function llmSpokenPrefix(title, content) {
 }
 let spCredCache = { v: null, t: 0 }; // DEEPSEEK_MEMORY_KEY 60s 缓存（vecCredCache 同手法）
 
-// ══ 检索升级 1a'：向量召回通道（design-approved
+// ══ 检索升级 1a'：向量召回通道（design-approved·DashScope text-embedding-v4 专用 key）════
 //    EMBEDDING_BAILIAN_KEY（credentials 官方管道）·1024 维·全库 BLOB float32 JS 暴力 KNN（万条内 <50ms）。
 //    memories_vec(id PK, embedding BLOB, model_version)——模型切换=版本戳防混查（同 FTS tokenizer 逻辑）。
 //    重嵌入入口：reembed 增量补全（nightly patrol末尾顺带 + search 时惰性补）。
 const VEC_MODEL = "text-embedding-v4";
-// ── 粒度手术+换底座（design-approved
-//    依据=opsem 0.427→0.664 实证+官方 qwen3.7 同价 +20%；双写过渡：旧表 v4 续供 A-01 fallback/nightly patrol dedup，nightly patrol刀再统一切。
+// ── 粒度手术+换底座（design-approved三车排程 ）：chunks 表走 qwen3.7 句级 max-sim ──
+//    依据=0.427→0.664 实证+官方 qwen3.7 同价 +20%；双写过渡：旧表 v4 续供 fallback/nightly patrol dedup，nightly patrol刀再统一切。
 //    SelRoute §5.5 pinboard：chunk=追加切句索引，原文永不替换。
 const VEC_CHUNK_MODEL = "qwen3.7-text-embedding";
 const VEC_DIM = 1024;
-// 句/段级切分：title 恒 seq=0；content 按句末标点/换行切段，并段 ≤300 字符，帽 8 段（opsem turn 级粒度同哲学）
+// 句/段级切分：title 恒 seq=0；content 按句末标点/换行切段，并段 ≤300 字符，帽 8 段（turn 级粒度同哲学）
 function chunkMemory(title, content) {
 	const out = [];
 	const t = String(title || "").trim();
@@ -962,7 +972,7 @@ function chunkMemory(title, content) {
 	return out.slice(0, 8);
 }
 let vecCredCache = { v: null, t: 0 }; // credentials 句柄 60s 缓存（避免每查 resolve）
-// ── option空间白名单闸计数面（design-approved
+// ── option空间白名单闸计数面（design-approved·braintask brief 22:10「先闸后挂载」）──
 //    模块级：write 分支（闸落点）写、host 分支（stats return）读——分支隔离所以模块级共享
 const spaceGateCounts = { blocked: 0, passed: 0, unconfigured: 0 };
 let spaceGateLastWarnAt = 0; // option闸拦截 warn 节流窗（60s·vecLastWarnAt 同手法）——三轮审计改进②：拦截有轨迹（挂载初期误拦可观测·编码纪律⑬）
@@ -1031,12 +1041,12 @@ async function vecRecallCore(conn, creds, query, topK) {
 		try {
 			conn.exec(`ALTER TABLE memories_vec ADD COLUMN content_hash TEXT`);
 		} catch {}
-		// ── 粒度手术（2026-08-31 item2）：句级 chunks 表=max-sim 迟交互载体（opsem 0.427→0.664 实证）──
+		// ── 粒度手术（2026-08-31 item2）：句级 chunks 表=max-sim 迟交互载体（0.427→0.664 实证）──
 		conn.exec(
 			`CREATE TABLE IF NOT EXISTS memories_vec_chunks (id INTEGER NOT NULL, seq INTEGER NOT NULL, chunk_text TEXT, embedding BLOB NOT NULL, model_version TEXT NOT NULL, PRIMARY KEY (id, seq, model_version))`,
 		);
 		// 惰性补全：缺 chunks 条目切句补嵌——单次帽 6 条（每条 3-8 段×批量 10/请求）防查询延迟
-		// P2修#26a（09-03 audit）：maintenance window挂牌期检索只读——惰性补嵌写跳过（原缺口=挂牌期 search 仍触库写·摘牌后自愈不致命）
+		// P2 fix（09-03 audit）：maintenance window挂牌期检索只读——惰性补嵌写跳过（原缺口=挂牌期 search 仍触库写·摘牌后自愈不致命）
 		const surgeryOnVec = fs2.existsSync(SURGERY_FLAG);
 		if (surgeryOnVec) surgerySkipVecEmbed += 1;
 		const missing = surgeryOnVec
@@ -1056,7 +1066,7 @@ async function vecRecallCore(conn, creds, query, topK) {
 					ins.run(r.id, 0, "", Buffer.alloc(0), VEC_CHUNK_MODEL);
 					continue;
 				} // 二轮审计修：空条目写占位行（与 chunks-backfill.py 对齐）——防永恒重试位挤死真缺嵌条目
-				const embs = await embedOnce(chunks, VEC_CHUNK_MODEL); // 09-03 裁①：chunks 句级路真接 qwen3.7（原硬编码 v4 落 qwen3.7 戳=假绿·audit#3）
+				const embs = await embedOnce(chunks, VEC_CHUNK_MODEL); // 09-03 裁①：chunks 句级路真接 qwen3.7（原硬编码 v4 落 qwen3.7 戳=假绿·audit）
 				for (let i = 0; i < chunks.length && i < embs.length; i++)
 					ins.run(r.id, i, chunks[i], f32ToBlob(embs[i]), VEC_CHUNK_MODEL);
 			}
@@ -1066,7 +1076,7 @@ async function vecRecallCore(conn, creds, query, topK) {
 			VEC_CHUNK_MODEL,
 			INSTRUCT_QUERY,
 		); // 09-03 裁①：query 与 chunks 同空间（跨空间混查防线）·item1：查询侧 instruct（探针实证 cos=0.951 生效·qwen3.7 指令遵循）
-		// 句级 max-sim：每条目取其 chunks 与 query 的最大余弦（opsem 迟交互同构·条目=多向量文档）
+		// 句级 max-sim：每条目取其 chunks 与 query 的最大余弦（迟交互同构·条目=多向量文档）
 		const allChunks = conn
 			.prepare(
 				`SELECT c.id, c.embedding FROM memories_vec_chunks c JOIN memories m ON m.id = c.id WHERE c.model_version = ? AND LENGTH(c.embedding) > 0 AND m.status IN ('active','merged','done')`,
@@ -1099,7 +1109,7 @@ async function vecRecallCore(conn, creds, query, topK) {
 		return [];
 	}
 }
-// ══ option·线上 rerank 精排层（design-approved
+// ══ option·线上 rerank 精排层（design-approved「按推荐」发车· 件③·论证=模块/memory organ/a companion script）══
 //    病灶=语义排序质量（专名域 vec 虚高挤位· 封顶归因）非表征粒度——融合候选帽 RERANK_CAND 按 base 取头 →
 //    线上 rerank query-document 真相关度精排 → topN 以 relevance_score 为 base 独尺入加权链（未入列候选弃置=论证稿
 //    「精排 top10 入加权链」原案·防 rerank 0~1 与 vecPart×10 新旧量纲混排）。
@@ -1208,7 +1218,7 @@ const GATE_STOP = new Set([
 	"生效",
 	"落盘",
 	"全绿",
-	// ── 0.2.0 首刀（issue#1 同车·09-08）：英文停用词追加——纯 ASCII 追加·中文行为零变 ──
+	// ── 0.2.0 首发（issue 同车·09-08）：英文停用词追加——纯 ASCII 追加·中文行为零变 ──
 	//    治面：英文用户标题/证据全英文时此表空转不滤高频词，同题判定精度伤（§9.9 真功能缺陷）。
 	//    功能性高频（对齐中文段语义）+英文结构停用词双段；token 入表前已 toLowerCase。
 	"task",
@@ -1274,7 +1284,7 @@ function gateKeywords(text, max) {
 }
 function closureCheck(conn, title, content, todoId) {
 	// step C案：ts 参随②同日排除退役（原仅喂 todoT·P-1 双锚不一致影响面同消）
-	// ── step（design-approved(1) 精确判 closed ──
+	// ── step（design-approved·召回状态化）：前置边判定——solved_by 活边指向本 todo ⇒ O(1) 精确判 closed ──
 	//    边=显式建边意图非词面巧合（再论证改判②：边路免 META_RE）；idx_edges_dst 部分索引恰在 invalid_at IS NULL 上 O(log n)；
 	//    起步只认 solved_by（改判①：patches→todo 语义含混「从待办学到教训」≠办毕·二批再纳）；无边照旧走词面全闸兜底。
 	try {
@@ -1292,13 +1302,13 @@ function closureCheck(conn, title, content, todoId) {
 			12,
 		);
 		if (kw.length === 0) return { closed: false };
-		// ── v2（2026-08-22 P0 批后task brief §一）：治自污染三重复现（6/7 误判·）──
+		// ── v2（2026-08-22 P0 批后task brief §一）：治自污染三重复现（6/7 误判）──
 		//    ①证据面收紧：fact/decision/lesson 证据须命中闭环词且【不】命中元类模式词——
 		//      「关于事实的记忆」（盘点/清单/裁处/审计/复现/汇总类条目）不再被当「事实本体」；
 		//    ②SQL 时间窗下推：ts >= 72h 前在 SQL 先过滤（修 LIMIT 150 截断漂移——库增长后老僵尸被挤出窗）；
-		//    ③同批互证防线由①元类全排承担（META_RE 72h 窗全排·B1 成果）；同日真 fact 为有效证据，不作时间性排除（A-1 C 案终谳·design-approved
+		//    ③同批互证防线由①元类全排承担（META_RE 72h 窗全排·B1 成果）；同日真 fact 为有效证据，不作时间性排除（C 案终谳·design-approved·step）。
 		const META_RE =
-			/盘点|清单|裁处|裁断|pending ruling|裁定|裁决|判定|剩.{0,4}条|清理field report|汇总|审计|复现|自检|escalate|方案|awaiting approval|草案|todo清理|待办清理|清理需区分|区分.{0,8}(真活|已闭环|被超越)|receipt|notify|field report|交接|追加|log|open item|counter|\b(?:audit|checklist|inventory|summary|report|review|retrospective|handover|handoff|proposal|pending)\b/i; // 0.2.0 首刀：英文元类分支追加（\b 边界·i flag 中文零影响）——英文「关于事实的记忆」证据同排除
+			/盘点|清单|裁处|裁断|pending ruling|裁定|裁决|判定|剩.{0,4}条|清理field report|汇总|审计|复现|自检|escalate|方案|awaiting approval|草案|todo清理|待办清理|清理需区分|区分.{0,8}(真活|已闭环|被超越)|receipt|notify|field report|交接|追加|log|open item|counter|\b(?:audit|checklist|inventory|summary|report|review|retrospective|handover|handoff|proposal|pending)\b/i; // 0.2.0 首发：英文元类分支追加（\b 边界·i flag 中文零影响）——英文「关于事实的记忆」证据同排除
 		const pastIso = (msAgo) => {
 			const d = new Date(Date.now() + 8 * 3600 * 1000 - msAgo);
 			const p = (n) => String(n).padStart(2, "0");
@@ -1310,7 +1320,7 @@ function closureCheck(conn, title, content, todoId) {
 				"SELECT id, ts, type, title, content FROM memories WHERE ts >= ? AND (" +
 					"(type = 'todo' AND status = 'done') OR " +
 					"((type = 'fact' OR type = 'decision' OR type = 'lesson') AND (title LIKE '%销账%' OR content LIKE '%销账%' OR title LIKE '%收官%' OR content LIKE '%收官%' OR title LIKE '%闭环%' OR content LIKE '%闭环%'))" +
-					") ORDER BY id DESC LIMIT 500", // design-approved
+					") ORDER BY id DESC LIMIT 500", // design-approved）
 			)
 			.all(since);
 		// ── v2.1 同题性锚定（2026-08-22 基线回归发现）：证据 title 须与待办 title ≥1 关键词重叠 ──
@@ -1323,10 +1333,10 @@ function closureCheck(conn, title, content, todoId) {
 				// 证据面收紧：元类条目（关于事实的记忆）不作证据
 				if (META_RE.test(String(r.title || "") + String(r.content || "")))
 					continue;
-				// ②同日排除已删（A-1 C 案·step）：同批互证由上方①元类全排承担；同日真 fact 为有效证据
+				// ②同日排除已删（C 案·step）：同批互证由上方①元类全排承担；同日真 fact 为有效证据
 			}
 			const rTitle = String(r.title || "").toLowerCase();
-			// ── B2 v2.2（design-approved(≥2 不同 titleKw 命中) ∨ β(单字 token 双不计) ──
+			// ── B2 v2.2（design-approved快刀）：锚定门升格合璧案——α(≥2 不同 titleKw 命中) ∨ β(单字 token 双不计) ──
 			//    病例：brain 07:50 四连误拦（候/复盘/验收等高频词+单字「候」全库撞击）；单字噪声不计锚定不计 hits。
 			const anchorHits = titleKw.filter(
 				(k) => k.length > 1 && rTitle.includes(k),
@@ -1351,13 +1361,13 @@ function closureCheck(conn, title, content, todoId) {
 		}
 		return { closed: false };
 	} catch (eCC) {
-		closureCheckErrors += 1; // P2修#35：四闸核心异常透出（原静默 return false=异常期全放行假绿·stats 可读）
+		closureCheckErrors += 1; // P2 fix：四闸核心异常透出（原静默 return false=异常期全放行假绿·stats 可读）
 		return { closed: false };
 	}
 }
 
 // ══ step③：space 规范与space加权 ═══════════════════════════════════════
-// ══ 第 1.step：space自注册（design-approved
+// ══ 第 1.step：space自注册（design-approved方案 A·配置驱动）════════════════
 //    启动扫描 your module directories 目录——SPACES = 内置九值 ∪ 新目录名；ORGAN_DIR_MAP 同源动态扩。
 //    目录内可选文件 space（内容=space 值）优先于目录名；扫描失败回退内置九值（降级不崩）。
 //    沙箱演练开关：LEGION_MODULE_SCAN_DIR 指向假模块目录（生产不设=正路径）。
@@ -1436,15 +1446,18 @@ function organFromPath(p) {
 	for (const [seg, space] of ORGAN_DIR_MAP) if (s.includes(seg)) return space;
 	return null;
 }
-// ── 吸收item（design-approved
+// ── 吸收item（design-approved「记忆直接做」·mem0 captureEvent 设计本地化）：工具使用遥测包装器 ──
 //    注入采纳率数据底座（综合推理漏点⑨·AgentRecall「捕获密度>检索技术」落地起点）。
 //    hard rule：遥测写库 try/catch 静默+toolUsageErrors 计数透出（stats 可读），绝不拖累主流程——「静默降级透出」立法第一活体。
 //    不记查询原文（防敏感堆积）——action 列只记 action/type 参数名面。
 let toolUsageErrors = 0;
-// ── P2 修（09-03 audit#26/#35）：模块级计数三键（toolUsageErrors 同族「静默降级透出」立法第一活体同法）──
-let closureCheckErrors = 0; // #35 closureCheck 顶层异常累计（四闸核心静默全放行的观测面）
-let surgerySkipVecEmbed = 0; // #26a 挂牌期 vecRecallCore 惰性补嵌写跳过数
-let surgerySkipWrite = 0; // #26b 挂牌期 memory_write 写路冻结数
+// ── P2 修（09-03 audit）：模块级计数三键（toolUsageErrors 同族「静默降级透出」立法第一活体同法）──
+let closureCheckErrors = 0; // closureCheck 顶层异常累计（四闸核心静默全放行的观测面）
+let surgerySkipVecEmbed = 0; // 挂牌期 vecRecallCore 惰性补嵌写跳过数
+let surgerySkipWrite = 0; // 挂牌期 memory_write 写路冻结数
+// 注：**故意用对象形态而非 `let x = 0`**——lens 写时纠错（prefer-const·局部视野）会在「声明已落、自增未落」的逐次编辑间隙把 let 优化成 const，
+// 致后续 `x++` 与 const 冲突（命中即 TypeError·本窗实测踩坑）⇒ 对象属性自增对 const 中立，抗纠错且语义等价。
+const dupWriteStat = { blocked: 0 }; // 09-11 梁 1b 同文幂等闸：memory_write 同文重复被拦数（模块级·跨重启清零·四点接线齐＝赋值/return/render/drill）
 function callerSpaceOf(exec) {
 	// 调用者space探测（遥测专用·与 search 段内联链同源但独立——检索高危面零触碰原则）
 	try {
@@ -1472,7 +1485,7 @@ function usageWrap(toolName, getConn, fn) {
 			else if (out && out.id !== undefined) rc = 1;
 			if (out && out.error) {
 				ok = 0;
-				// P2修#36（09-03 audit）：errKind step切 param 污染采纳率归因——按错误文案细分三态
+				// P2 fix（09-03 audit）：errKind step切 param 污染采纳率归因——按错误文案细分三态
 				const es = String(
 					typeof out.error === "string"
 						? out.error
@@ -1522,7 +1535,7 @@ function spaceWeight(hitSpace, callerSpace) {
 	return 0.05;
 }
 // projcache cwd → sessions 目录名解码 双源映射（自动提炼 space 用；归位脚本同源逻辑）
-// P0 修复（design-approved6 实证 28375d 八小时 35 条全落 global）
+// P0 修复（design-approved）：②dirMap 缓存 TTL 化 60s（原进程级永固——「重启依赖症」制造者：长稳运行期新建会话永不入缓存·8-26 实证 28375d 八小时 35 条全落 global）
 let sessionsDirCache = { at: 0, map: null };
 const SESSIONS_DIR_TTL = 60000;
 function sessionsDirMap() {
@@ -1557,10 +1570,10 @@ function sessionsDirMap() {
 	sessionsDirCache = { at: Date.now(), map };
 	return map;
 }
-// ── 庚刀核心 helper(design note)：projcacheV5 双源读 ──
+// ── 庚批核心 helper(design note)：projcacheV5 双源读 ──
 //    宿主 09-02 改 layout:"per-record"——旧单文件 session_projcache.json 自 09-05 00:12 停更（三读者死指针：token spend端点/归属链/nightly patrol压力哨）。
 //    新面：sessions/session-<sid>.json {version,record:{identity,rows}}——本函数归一双源：新目录优先·空则回退旧单文件·返回 Map(sid→rows)
-//    第三轮审计修复（2026-09-09·pending ruling①庚刀三重死）：①上提模块层（原居 apply host 分支内——模块顶层 sessionOrgan 幻引用恒 ReferenceError 被空 catch 静吞·假绿族第六犯）
+//    第三轮审计修复（2026-09-09·pending ruling①庚批三重死）：①上提模块层（原居 apply host 分支内——模块顶层 sessionOrgan 幻引用恒 ReferenceError 被空 catch 静吞·假绿族第六犯）
 //    ②map 键=文件名去 .json 原样（原 slice 剥前缀 vs 查询侧带前缀=键形错位恒不中·双锁死）③放行裸 uuid 文件名（宿主子代理会话 id=裸 uuid·原 startsWith 过滤实测丢 160/338=47% 会话）
 function projcacheRows() {
 	const out = new Map();
@@ -1622,7 +1635,7 @@ function sessionOrgan(sid) {
 		if (!_pcCache.map || Date.now() - _pcCache.at > 60000) {
 			_pcCache = {
 				at: Date.now(),
-				map: projcacheRows(), // 庚刀修②：Map(sid→{rows,identity})——v5 双源（旧 JSON.parse 单文件死指针）
+				map: projcacheRows(), // 庚批修②：Map(sid→{rows,identity})——v5 双源（旧 JSON.parse 单文件死指针）
 			};
 		}
 		const tbl =
@@ -1632,7 +1645,7 @@ function sessionOrgan(sid) {
 					? key.slice("session-".length)
 					: "session-" + key,
 			); // 第三轮审计修（09-09 pending ruling①）：双形态键兼容——projcache 文件名=session id 原样入键（主窗带前缀·子代理裸 uuid）·两侧形态都试
-		// P0 修复（design-approved 系幻字段（rows 层无此键·两日恒空·二审settled）
+		// P0 修复（design-approved）：①第一源读 identity.cwd（官方 spec 层·111/111 全在位）——原读 rows.cwd.val 系幻字段（rows 层无此键·两日恒空·二审settled）
 		const cwd =
 			tbl?.identity?.cwd || tbl?.rows?.cwd?.val || tbl?.rows?.workspace?.val;
 		if (cwd) {
@@ -1660,7 +1673,7 @@ function ensureFts(dbConn) {
 		try {
 			dbConn.exec("ALTER TABLE memories ADD COLUMN event_at TEXT");
 		} catch {}
-		// A-14（wave）：write 连接备 vec 表（写时即时嵌入 INSERT 目标——建表兜底·列缺失容错）
+		// （wave）：write 连接备 vec 表（写时即时嵌入 INSERT 目标——建表兜底·列缺失容错）
 		try {
 			dbConn.exec(
 				`CREATE TABLE IF NOT EXISTS memories_vec (id INTEGER PRIMARY KEY, embedding BLOB NOT NULL, model_version TEXT NOT NULL)`,
@@ -1670,7 +1683,7 @@ function ensureFts(dbConn) {
 			dbConn.exec("ALTER TABLE memories_vec ADD COLUMN content_hash TEXT");
 		} catch {}
 		// 8-31 长尾甲档①（F0-0 引导序破绽·审计settled+他窗  复审成立）：全新库时 edges 表唯建点在nightly patrol段——
-		//    首nightly patrol前带边写入（A-13/#19/A-20）全撞 no such table 被吞=显式边/反思链全丢；建表兜底与nightly patrol段同构（含 instruction 列），ALTER 幂等吞。
+		//    首nightly patrol前带边写入全撞 no such table 被吞=显式边/反思链全丢；建表兜底与nightly patrol段同构（含 instruction 列），ALTER 幂等吞。
 		try {
 			dbConn.exec(`CREATE TABLE IF NOT EXISTS memories_edges (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1679,28 +1692,28 @@ function ensureFts(dbConn) {
       source_group TEXT, last_seen TEXT NOT NULL, instruction TEXT,
       UNIQUE(src, dst, edge_type))`);
 		} catch {}
-		// ── A-17 边语义列(design note)：边上承载「为何相关」——
+		// ── 边语义列(design note)：边上承载「为何相关」——
 		//    图=衍生层补列：正账仍在条目库·边列只存关系语义（instruction 文本·缺省 NULL 不破存量）。
 		try {
 			dbConn.exec("ALTER TABLE memories_edges ADD COLUMN instruction TEXT");
 		} catch {}
-		// P2 三态硬标记（2026-08-26 stepwave）：stale_state 空=active/review=待复核/retired=退役——过时≠删除·可见流转；stale_at=标记时点；stale_by=patrol-auto|manual:<space>
+		// P2 三态硬标记（2026-08-26 step wave）：stale_state 空=active/review=待复核/retired=退役——过时≠删除·可见流转；stale_at=标记时点；stale_by=patrol-auto|manual:<space>
 		try {
 			dbConn.exec("ALTER TABLE memories ADD COLUMN stale_state TEXT");
 		} catch {}
-		// ── MP吸收#10/#11(design note)⑭启动即备：closed_at 闭环时刻列（墓碑时间线·merged/aged 写点同步记）+confidence 信任列（external 分级·默认 1.0）
+		// ── (design note)⑭启动即备：closed_at 闭环时刻列（墓碑时间线·merged/aged 写点同步记）+confidence 信任列（external 分级·默认 1.0）
 		try {
 			dbConn.exec("ALTER TABLE memories ADD COLUMN closed_at TEXT");
 		} catch {}
 		try {
 			dbConn.exec("ALTER TABLE memories ADD COLUMN valid_to TEXT");
-		} catch {} // #9 双时态（stepstep·2026-08-30）：事件轴失效戳——closed_at=事务轴·valid_to=事件轴（wb 五轴齐）·写路 A14 格式闸同款
+		} catch {} // 双时态（step·2026-08-30）：事件轴失效戳——closed_at=事务轴·valid_to=事件轴（五轴齐）·写路 A14 格式闸同款
 		try {
 			dbConn.exec(
 				"ALTER TABLE memories ADD COLUMN essential INTEGER DEFAULT 0",
 			);
-		} catch {} // #22 essential 常驻分级（stepstep·wb essence/CORE 旗标意）：核心记忆不衰+恒注入
-		// ── item（design-approved
+		} catch {} // essential 常驻分级（step·essence/CORE 旗标意）：核心记忆不衰+恒注入
+		// ── item（design-approved）：spoken_prefix 口语前缀列——LLM 生成「用户随口问法」词组入 FTS 索引侧 ──
 		//    治 spoken 层 12.5%（词汇鸿沟：口语查询 vs 书面条目零交叠·沙箱效上限 95.8% 实测）；
 		//    SelRoute asymmetry 守门：前缀只进 FTS 不进 embedding/chunks（存储侧词表扩展伤向量路——嵌入面全文不碰）。
 		try {
@@ -1717,7 +1730,7 @@ function ensureFts(dbConn) {
 		try {
 			dbConn.exec("ALTER TABLE memories ADD COLUMN stale_by TEXT");
 		} catch {}
-		// A-3（step·07:30 maintainer）：validated_count ALTER+回填挪至启动即建——原唯在nightly patrol段·重启后→首nightly patrol前消费面（PPR）缺列=A-19 边权从未生效
+		// （step·07:30 maintainer）：validated_count ALTER+回填挪至启动即建——原唯在nightly patrol段·重启后→首nightly patrol前消费面（PPR）缺列=边权从未生效
 		try {
 			dbConn.exec(
 				"ALTER TABLE memories ADD COLUMN validated_count INTEGER DEFAULT 1",
@@ -1728,7 +1741,7 @@ function ensureFts(dbConn) {
 				"UPDATE memories SET validated_count = 1 WHERE status='active' AND validated_count IS NULL",
 			);
 		} catch {} // 回填（NULL→1·幂等·原nightly patrol残段挪此）
-		// ── 吸收item 建表（design-approved
+		// ── 吸收item 建表（design-approved「记忆直接做」·mem0 captureEvent 本地化）：工具使用遥测 ──
 		//    注入采纳率数据底座（综合推理漏点⑨）——ts/tool/caller_space/action/duration_ms/result_count/success/error_kind；
 		//    hard rule：遥测写库 try/catch 静默+计数透出（toolUsageErrors），绝不拖累主流程（静默降级透出立法第一活体）。
 		try {
@@ -1756,7 +1769,7 @@ function ensureFts(dbConn) {
 		dbConn.exec(
 			`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(tokens)`,
 		);
-		// ── 微型刀②：分词器版本戳（源：layered-memory FTS 版本戳·2026-08-21 B2 借鉴）──
+		// ── 微型件②：分词器版本戳（源：layered-memory FTS 版本戳·2026-08-21 B2 借鉴）──
 		//    token 形态变更时防新旧索引混查——不匹配仅 warn 提示重建，不自动重建（maintainer措辞）。
 		const TOKENIZER_VERSION = jieba ? "jieba2-cjk-v1" : "cjk-bigram-v1"; // 刀 3：jieba2=2.x class 实例（词表版）——与旧 bigram 索引不兼容，mismatch warn 后按手册重建
 		dbConn.exec(
@@ -1833,28 +1846,28 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 				valid_to: {
 					type: "string",
 					description:
-						"可选·#9 双时态事件轴失效戳 YYYY-MM-DD[THH:mm]：条目所述状态/事实的失效时点（如待办已毕/机制已废）——到点检索沉底×0.2·与 closed_at（事务轴）互补；缺省=不失效",
+						"可选·双时态事件轴失效戳 YYYY-MM-DD[THH:mm]：条目所述状态/事实的失效时点（如待办已毕/机制已废）——到点检索沉底×0.2·与 closed_at（事务轴）互补；缺省=不失效",
 				},
 				ttl_days: {
 					type: "number",
 					description:
-						"可选·#13 在库 TTL 寿命天数（1-365）：声明状态事实的存活期——写入时换算 valid_to=入册+ttl 并打 ttl 标，**到点nightly patrol自动转 aged 退出检索**（wb set_state_expiry 意·硬退出）；与 valid_to 显式补记（软沉底 ⏦）区分",
+						"可选·在库 TTL 寿命天数（1-365）：声明状态事实的存活期——写入时换算 valid_to=入册+ttl 并打 ttl 标，**到点nightly patrol自动转 aged 退出检索**（set_state_expiry 意·硬退出）；与 valid_to 显式补记（软沉底 ⏦）区分",
 				},
 				essential: {
 					type: "boolean",
 					description:
-						"可选·#22 常驻核心标（wb ORIGIN/CORE 旗标意）：亲判核心知识——decay 恒 1.0 不衰+注入面常驻席（帽 3·按验证度排序）·directive级/根机制类条目适用",
+						"可选·常驻核心标（ORIGIN/CORE 旗标意）：亲判核心知识——decay 恒 1.0 不衰+注入面常驻席（帽 3·按验证度排序）·directive级/根机制类条目适用",
 				},
 				relatedIds: {
 					type: "array",
 					items: { type: "number" },
 					description:
-						"可选·A-13 显式关联边（gm relatedSkill 建边意融入）：关联既有条目 id 数组——人知因果/从属关系显式建边（kind=explicit），区别于nightly patrol jaccard 派生边；单写≤5 条",
+						"可选·显式关联边（graph-memory relatedSkill 建边意融入）：关联既有条目 id 数组——人知因果/从属关系显式建边（kind=explicit），区别于nightly patrol jaccard 派生边；单写≤5 条",
 				},
 				relatedNotes: {
 					type: "string",
 					description:
-						"可选·A-17 边语义（wave·gm 边带 instruction 意）：relatedIds 的关系说明（为何相关）——写入边 instruction 列",
+						"可选·边语义（wave·graph-memory 边带 instruction 意）：relatedIds 的关系说明（为何相关）——写入边 instruction 列",
 				},
 				edgeKind: {
 					type: "string",
@@ -1867,7 +1880,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						"conflicts_with",
 					],
 					description:
-						"可选·A-18 语义边型（wave·gm 五语义边意）：显式边关系类型·缺省 explicit",
+						"可选·语义边型（wave·graph-memory 五语义边意）：显式边关系类型·缺省 explicit",
 				},
 				closeTargetId: {
 					type: "number",
@@ -1897,7 +1910,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 							"]（step：space 必带，缺省拒绝）",
 					};
 				}
-				// ── option空间白名单闸（design-approved
+				// ── option空间白名单闸（design-approved·braintask brief 22:10）：写权从按窗收编改按空间收编 ──
 				//    Per-space write gate: caller == target space is allowed (own space); the two
 //    privileged spaces (brain / memory-organ) may write anywhere; anything else is
 //    rejected, and an unresolved caller is rejected too (a window of unknown
@@ -1961,7 +1974,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					};
 				}
 				if (!process.env.LEGION_SPACEGATE_OFF) spaceGateCounts.passed += 1; // 三轮审计改进①：演练 OFF 通道不计数（防观测面虚增）
-				// ── P2修#26b（09-03 audit）：maintenance window闸补写路覆盖——挂牌期 memory_write 冻结（extract L2622/patrol L3861 两闸同族；原缺口=写路不查旗标）──
+				// ── P2 fix（09-03 audit）：maintenance window闸补写路覆盖——挂牌期 memory_write 冻结（extract L2622/patrol L3861 两闸同族；原缺口=写路不查旗标）──
 				if (fs2.existsSync(SURGERY_FLAG)) {
 					surgerySkipWrite += 1;
 					return {
@@ -2009,7 +2022,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						}
 					}
 				}
-				// ── P1-2 行为位软提示（design-approved
+				// ── P1-2 行为位软提示（design-approved细则）：lesson 无「行为位：」提示补位（返回值提示·不阻断）──
 				//    审计修正 19:03：todo+lesson 双命中时叠加（原互斥覆盖丢一提示）；非 todo/lesson 型不覆盖
 				if (
 					String(args.type) === "lesson" &&
@@ -2021,7 +2034,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						"」缺行为位——无行为位不算教训（checklist/闸位/口径居一），建议补「行为位：XXX」";
 					cGateHint = cGateHint ? cGateHint + "；" + p12 : p12;
 				}
-				// ── 复犯链回软提示（design-approved
+				// ── 复犯链回软提示（design-approved「同意」·审计漏③治法）：lesson 无 relatedIds 提醒链回 ──
 				//    零阻断（首犯合法无边照常入库）·与 P1-2/C 档同构；治 51.3% 无边面的「忘了链」部分（8-31 hard rule机械闸化）
 				if (
 					String(args.type) === "lesson" &&
@@ -2031,7 +2044,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						"链回提示：lesson 无 relatedIds——若为复犯必链回原条（relatedIds 参数·复犯链回hard rule 8-31·边入度=真复犯计数）";
 					cGateHint = cGateHint ? cGateHint + "；" + relHint : relHint;
 				}
-				// ── 梁 1 写入面·可召回性闸（design-approved
+				// ── 梁 1 写入面·可召回性闸（design-approved「dispatch」·软提示版）──
 				//    缺口背景：五梁唯一整项空白（第四轮审计报告 §二/§五：码面 grep「可召回性/titleQuality/recallGate」零命中）
 				//    判据双面：①title 过短（去空白 <8 字）或泛词主导（去泛词/标点后 <8 实义字）——日后召回无抓手
 				//              ②content 首句过短（<12 字）——摘要不自含，命中后无上下文可判
@@ -2070,160 +2083,22 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 				const ts = nowIso();
 				const title = stripUrls(String(args.title));
 				const content = stripUrls(String(args.content));
-				// A14（2026-08-26 修法包·wave 审计）：event_at 格式校验——非法字符串回落 null（防 P2 超龄线 COALESCE 字符串比较语义漂移）
-				// E2（design-approved
-				let eventAt = String(args.event_at || "").trim() || null;
-				if (
-					eventAt !== null &&
-					!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T(0[0-9]|1\d|2[0-3]):[0-5]\d)?$/.test(
-						eventAt,
-					)
-				) {
-					logger?.warn?.(
-						`[living-memory] event_at 格式非法回落（A14）: "${String(args.event_at).slice(0, 30)}"`,
-					);
-					eventAt = null;
-				}
-				let validTo = String(args.valid_to || "").trim() || null; // #9 双时态：A14 同款格式闸
-				if (
-					validTo !== null &&
-					!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T(0[0-9]|1\d|2[0-3]):[0-5]\d)?$/.test(
-						validTo,
-					)
-				) {
-					logger?.warn?.(
-						`[living-memory] valid_to 格式非法回落（#9）: "${String(args.valid_to).slice(0, 30)}"`,
-					);
-					validTo = null;
-				}
-				// #13 在库 TTL：声明寿命→valid_to 换算+ttl 标（nightly patrol硬退出 aged·与 #9 显式补记软沉底区分）
-				const ttlDays = Number(args.ttl_days);
-				let ttlMark = false;
-				if (Number.isInteger(ttlDays) && ttlDays >= 1 && ttlDays <= 365) {
-					const exp = new Date(
-						Date.now() + 8 * 3600 * 1000 + ttlDays * 86400000,
-					); // 8-31 时区修复（审计 P0-7）：+8h 后取 UTC 分量=上海本地日——原裸 toISOString=UTC 日·本地 0-8 点写入到期日早一天硬退出（全库 +08:00 轴·对照 accio 时态列口径）
-					const iso = exp.toISOString().slice(0, 10);
-					if (validTo === null) validTo = iso; // 显式 valid_to 优先·TTL 仅补
-					ttlMark = true;
-				} else if (args.ttl_days !== undefined) {
-					logger?.warn?.(
-						`[living-memory] ttl_days 非法忽略（#13·1-365 整数）: "${String(args.ttl_days).slice(0, 20)}"`,
-					);
-				}
-				// ── P1② 写闸 source 自动带（design-approved
-				const sidAnchor =
-					(typeof getSessionId === "function" && getSessionId()) || "";
-				const finalSource =
-					String(args.source || "") ||
-					(sidAnchor ? "session:" + sidAnchor : "handwrite");
-				const info = ttlMark
-					? dbConn
-							.prepare(
-								"INSERT INTO memories (ts, type, title, content, space, source, checksum, event_at, valid_to, stale_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-							)
-							.run(
-								ts,
-								String(args.type),
-								title,
-								content,
-								String(args.space || "memory-organ"),
-								finalSource,
-								sha1(ts + title + content),
-								eventAt,
-								validTo,
-								"ttl",
-							)
-					: dbConn
-							.prepare(
-								"INSERT INTO memories (ts, type, title, content, space, source, checksum, event_at, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-							)
-							.run(
-								ts,
-								String(args.type),
-								title,
-								content,
-								String(args.space || "memory-organ"),
-								finalSource,
-								sha1(ts + title + content),
-								eventAt,
-								validTo,
-							); // #13：TTL 声明条预写 stale_state='ttl'（nightly patrol硬退出依据·与 #9 软沉底区分）——run 返回值链式（lastInsertRowid 在 run 结果上·statement 本体无）
-				const row = dbConn.prepare("SELECT COUNT(*) AS c FROM memories").get();
-				if (args.essential === true) {
-					try {
-						dbConn
-							.prepare("UPDATE memories SET essential = 1 WHERE id = ?")
-							.run(Number(info.lastInsertRowid));
-					} catch (e22) {
-						try {
-							logger?.warn?.(
-								"[living-memory] essential mark fail: " +
-									String(e22).slice(0, 60),
-							);
-						} catch {}
-					}
-				} // #22 常驻核心标（后置 UPDATE·免 INSERT 分支——statement/run 混淆教训）；8-31 长尾乙档（F1-6）：空 catch 补 warn——常驻标静默落空（decay 恒 1.0+注入常驻席失效）自此可见
-				// ── A-13 显式关联边（13:49 approved·gm relatedSkill 建边意融入·wave）：人知关联>事后 jaccard
-				//    派生——写入时显式声明 relatedTo 既有条目。幂等：同对已存在则刷 last_seen（UPSERT·不重插）。单写≤5。
-				//    wave A-17/A-18 扩（15:54）：+instruction 边语义列（relatedNotes「为何相关」）+语义边型
-				//    （edgeKind 五型·gm 五语义边意）——A-13' 统一版。
-				let relatedLinked = 0;
-				try {
-					const relIds = Array.isArray(args.relatedIds)
-						? Array.from(
-								new Set(
-									args.relatedIds
-										.map(Number)
-										.filter(
-											(n) =>
-												Number.isInteger(n) &&
-												n > 0 &&
-												n !== Number(info.lastInsertRowid),
-										),
-								),
-							).slice(0, 5)
-						: []; // 8-31 长尾乙档（F1-3）：Set 去重——原重复入参 [3,3,3] 同键三次 UPSERT 致 weight 虚增+relatedLinked 虚报
-					const EDGE_KINDS = [
-						"explicit",
-						"solved_by",
-						"requires",
-						"used_skill",
-						"patches",
-						"conflicts_with",
-					];
-					const eKind = EDGE_KINDS.includes(String(args.edgeKind))
-						? String(args.edgeKind)
-						: "explicit";
-					const eNote = String(args.relatedNotes || "").slice(0, 300) || null; // A-17：边语义（为何相关）·300 帽
-					if (relIds.length > 0) {
-						const chk = dbConn.prepare("SELECT id FROM memories WHERE id = ?");
-						const insEdge =
-							dbConn.prepare(`INSERT INTO memories_edges (src, dst, edge_type, weight, valid_at, source_group, last_seen, instruction)
-            VALUES (?, ?, ?, 1.0, ?, 'manual:' || ?, ?, ?)
-            ON CONFLICT(src, dst, edge_type) DO UPDATE SET last_seen = excluded.last_seen, weight = weight + 0.1, instruction = COALESCE(excluded.instruction, memories_edges.instruction)`); // D4 修正沿用：ts 单源；A-17：instruction 覆写非空时更新（COALESCE 空不抹旧）
-						for (const rid of relIds) {
-							if (!chk.get(rid)) continue; // 目标不存在静默跳过（不炸写入主路）
-							insEdge.run(
-								Number(info.lastInsertRowid),
-								rid,
-								eKind,
-								ts,
-								finalSource,
-								ts,
-								eNote,
-							);
-							relatedLinked += 1;
-						}
-					}
-				} catch (e2) {
-					try {
-						logger?.warn?.(
-							"[living-memory] A-13 edge fail: " + String(e2).slice(0, 60),
-						);
-					} catch {}
-				}
-				// ── step（design-approved再写销账 fact」的工程化 ──
+				// ── 梁 1b 写入面·同文幂等闸（design-approved「同意」·创造dispatch）──
+				//    案情：session-2bf4aec4 同参 memory_write 21 连发·21 条同题全入库（/5950/5952-5970·jaccard 1.0）
+				//    机制缝隙（**2026-09-11 独立审计 D1 订正**）：原记述「掺 ts ⇒ 每发哈希皆异·21 条 checksum 各不相同」**被真库实测否证**——
+				//      实测 distinct checksum = **10/21**（5954/5955 同值·5961/5962/5963 同值·5964/5965/5966 同值）；真因＝①`nowIso` **分钟精度**（无秒
+				//      ⇒ 同分钟同文哈希相同·跨分钟必异）②**checksum 列无 UNIQUE 约束＋memories 无二级索引**（sqlite_master 索引表为空）⇒ 内容级判据缺位。
+				//      本闸（完全一致口径硬拦）**不受此订正影响**·对真案有效性已由独立审计复刻 SQL 实测（命中  ⇒ 应拦）
+				//    判据（保守·完全一致口径）：同 space + status='active' + 24h 窗内存在 title+content 去空白后全同条目 → 硬拦拒写
+				//    **不采 jaccard≥0.98 近同**：task brief需求③「显式修订（title/content 有变体）不拦」与近同判据天然互斥——0.98 阈值必误伤微改修订
+				//    错位互补：宿主熔断闸（loop-breaker 插件）治「同参 10min 窗秒级连发」·本闸治「跨窗/微变参同文」（判据不重叠·叠加零误伤）
+				//    逃生口：内容任何变化即成变体放行·换 space 放行·超 24h 窗放行（宁漏勿误——**兜底口径订正（审计 N2）**：nightly patrol①去重 key=`type+title` 且**不自动合并**·只挂 conflicts pending 候maintainer（人工执行）⇒ 实为「候裁兜底」非「自动去重兜底」）
+				// ── 【前置搬移·2026-09-11 独立审计 D1 修复】本段原居本条 INSERT 之后的下方（即闸 return 之下）——
+				//    审计实测（子代理专项 drill 实锤）：同文闸命中即 return ⇒ 闭环副作用被**静默吞**（目标 todo 仍 active/closed_at=null·receipt只字不提）
+				//    ——恰为 09-10 directive 「办结=改状态位·非写叙述」的反面复犯。修法（审计建议 a）：整段上移至同文闸**之前**。
+				//    安全性依据：本段只操作**目标**条（不依赖本条 id）·且此点 ts/dbConn/args/logger 已齐备 ⇒ 上移零依赖风险。
+				//    语义：本条同文被拦时，目标 todo 的闭环**照常执行**，receipt同时透出「同文拦 + 闭环结果」两条信息。
+				// ── step（design-approved·召回状态化）：closeTargetId 办结闭环——L1849 注释承诺「先 UPDATE status=done 再写销账 fact」的工程化 ──
 				//    再论证改判④：独立可选参数（不动 type 枚举——type=条目语义 vs close=动作·LangMem/TodoWrite 同业皆独立动作参数）；
 				//    携带时双发合一：本条正常入库（title 作销句）+ UPDATE 目标 todo → done+closed_at（照 L5127/L5458 merged/aged 写点同步 closed_at 先例）。
 				//    权限=option同构：目标 space 必须等于本次写入 space（写权闸已在前把守·WHERE 三重收窄）；幂等：已 done 返原态不报错。
@@ -2306,13 +2181,222 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						}
 					}
 				}
-				// ── #19 A-MEM 写入即反思（stepstep·2026-08-30 goal 五连刀·A-MEM 论文 dynamic linking 意）──
+				if (args.title || args.content) {
+					const _dupSpace = String(args.space || "memory-organ");
+					const _dupNorm = (s) => String(s || "").replace(/\s+/g, "");
+					const _dupT = _dupNorm(title);
+					const _dupC = _dupNorm(content);
+					try {
+						const _dupRows = dbConn
+							.prepare(
+								"SELECT id, ts, title, content FROM memories WHERE space = ? AND status = 'active' AND ts >= ? ORDER BY id DESC LIMIT 500",
+							)
+							.all(_dupSpace, nowIso24hAgo()); // 取同 space 24h 窗最新 500 条（超 500 只致漏拦不致误拦——安全方向）
+						const _dupHit = _dupRows.find(
+							(r) =>
+								_dupNorm(r.title) === _dupT && _dupNorm(r.content) === _dupC,
+						);
+						if (_dupHit) {
+							dupWriteStat.blocked++;
+							// 审计 I2 修（2026-09-11）：非法 ts ⇒ Date.parse→NaN ⇒ _dupMin 曾渲染「NaN 分钟前入库」；加 Number.isFinite 守卫兜底 0
+							const _dupMs = Date.now() - Date.parse(String(_dupHit.ts));
+							const _dupMin = Number.isFinite(_dupMs)
+								? Math.max(0, Math.round(_dupMs / 60000))
+								: 0;
+							// 审计 D1 修复配套（2026-09-11）：close 段已前置执行 ⇒ receipt须同时透出闭环结果（原闸命中即 return ⇒ 闭环信息被静默吞）
+							const _closeNote = closedTodo
+								? closedTodo.ok
+									? "｜✔ 目标 todo #" +
+										closedTodo.id +
+										" 已闭环（" +
+										String(closedTodo.closedAt || "").slice(0, 16) +
+										(closedTodo.alreadyDone ? "·幂等返原态" : "") +
+										"）"
+									: "｜⚠ 目标 todo 未闭环：" + String(closedTodo.reason || "")
+								: "";
+							return {
+								error:
+									"⏭ 同文幂等拦：#" +
+									_dupHit.id +
+									" 已存在同文条目（space=" +
+									_dupSpace +
+									"·" +
+									_dupMin +
+									" 分钟前入库·title「" +
+									title.slice(0, 24) +
+									"」）——去空白后 title+content 全同，重复写入已拒绝。若确为更新：请写有实质变体的新条目并以 relatedIds 链回 #" +
+									_dupHit.id +
+									"（同文闸 09-11 kimi 21 连发案·同文重发=注入面污染源）" +
+									_closeNote,
+							};
+						}
+					} catch (eDup) {
+						// ⑬ 纪律：闸自身故障必有出口——warn（放行不阻断：闸坏不得锁死写路）
+						logger?.warn?.(
+							`[living-memory] 同文闸查询失败（放行不阻断·⑬ 出口）: ${String(eDup && eDup.message).slice(0, 120)}`,
+						);
+					}
+				}
+				// A14（2026-08-26 修法包·wave 审计）：event_at 格式校验——非法字符串回落 null（防 P2 超龄线 COALESCE 字符串比较语义漂移）
+				// E2（design-approved同车）：补月日范围校验——2026-13-99 类越界值不再过闸
+				let eventAt = String(args.event_at || "").trim() || null;
+				if (
+					eventAt !== null &&
+					!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T(0[0-9]|1\d|2[0-3]):[0-5]\d)?$/.test(
+						eventAt,
+					)
+				) {
+					logger?.warn?.(
+						`[living-memory] event_at 格式非法回落（A14）: "${String(args.event_at).slice(0, 30)}"`,
+					);
+					eventAt = null;
+				}
+				let validTo = String(args.valid_to || "").trim() || null; // 双时态：A14 同款格式闸
+				if (
+					validTo !== null &&
+					!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T(0[0-9]|1\d|2[0-3]):[0-5]\d)?$/.test(
+						validTo,
+					)
+				) {
+					logger?.warn?.(
+						`[living-memory] valid_to 格式非法回落: "${String(args.valid_to).slice(0, 30)}"`,
+					);
+					validTo = null;
+				}
+				// 在库 TTL：声明寿命→valid_to 换算+ttl 标（nightly patrol硬退出 aged·与 显式补记软沉底区分）
+				const ttlDays = Number(args.ttl_days);
+				let ttlMark = false;
+				if (Number.isInteger(ttlDays) && ttlDays >= 1 && ttlDays <= 365) {
+					const exp = new Date(
+						Date.now() + 8 * 3600 * 1000 + ttlDays * 86400000,
+					); // 8-31 时区修复（审计 P0-7）：+8h 后取 UTC 分量=上海本地日——原裸 toISOString=UTC 日·本地 0-8 点写入到期日早一天硬退出（全库 +08:00 轴·对照 时态列口径）
+					const iso = exp.toISOString().slice(0, 10);
+					if (validTo === null) validTo = iso; // 显式 valid_to 优先·TTL 仅补
+					ttlMark = true;
+				} else if (args.ttl_days !== undefined) {
+					logger?.warn?.(
+						`[living-memory] ttl_days 非法忽略（1-365 整数）: "${String(args.ttl_days).slice(0, 20)}"`,
+					);
+				}
+				// ── P1② 写闸 source 自动带（design-approved·契约审计 C4/C12 治单）：手写路缺 source 时自动补会话锚，回链不断、写权可审计 ──
+				const sidAnchor =
+					(typeof getSessionId === "function" && getSessionId()) || "";
+				const finalSource =
+					String(args.source || "") ||
+					(sidAnchor ? "session:" + sidAnchor : "handwrite");
+				const info = ttlMark
+					? dbConn
+							.prepare(
+								"INSERT INTO memories (ts, type, title, content, space, source, checksum, event_at, valid_to, stale_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+							)
+							.run(
+								ts,
+								String(args.type),
+								title,
+								content,
+								String(args.space || "memory-organ"),
+								finalSource,
+								sha1(ts + title + content),
+								eventAt,
+								validTo,
+								"ttl",
+							)
+					: dbConn
+							.prepare(
+								"INSERT INTO memories (ts, type, title, content, space, source, checksum, event_at, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+							)
+							.run(
+								ts,
+								String(args.type),
+								title,
+								content,
+								String(args.space || "memory-organ"),
+								finalSource,
+								sha1(ts + title + content),
+								eventAt,
+								validTo,
+							); // TTL 声明条预写 stale_state='ttl'（nightly patrol硬退出依据·与 软沉底区分）——run 返回值链式（lastInsertRowid 在 run 结果上·statement 本体无）
+				const row = dbConn.prepare("SELECT COUNT(*) AS c FROM memories").get();
+				if (args.essential === true) {
+					try {
+						dbConn
+							.prepare("UPDATE memories SET essential = 1 WHERE id = ?")
+							.run(Number(info.lastInsertRowid));
+					} catch (e22) {
+						try {
+							logger?.warn?.(
+								"[living-memory] essential mark fail: " +
+									String(e22).slice(0, 60),
+							);
+						} catch {}
+					}
+				} // 常驻核心标（后置 UPDATE·免 INSERT 分支——statement/run 混淆教训）；8-31 长尾乙档（F1-6）：空 catch 补 warn——常驻标静默落空（decay 恒 1.0+注入常驻席失效）自此可见
+				// ── 显式关联边（13:49 approved·graph-memory relatedSkill 建边意融入·wave）：人知关联>事后 jaccard
+				//    派生——写入时显式声明 relatedTo 既有条目。幂等：同对已存在则刷 last_seen（UPSERT·不重插）。单写≤5。
+				//    wave 扩（15:54）：+instruction 边语义列（relatedNotes「为何相关」）+语义边型
+				//    （edgeKind 五型·graph-memory 五语义边意）——统一版。
+				let relatedLinked = 0;
+				try {
+					const relIds = Array.isArray(args.relatedIds)
+						? Array.from(
+								new Set(
+									args.relatedIds
+										.map(Number)
+										.filter(
+											(n) =>
+												Number.isInteger(n) &&
+												n > 0 &&
+												n !== Number(info.lastInsertRowid),
+										),
+								),
+							).slice(0, 5)
+						: []; // 8-31 长尾乙档（F1-3）：Set 去重——原重复入参 [3,3,3] 同键三次 UPSERT 致 weight 虚增+relatedLinked 虚报
+					const EDGE_KINDS = [
+						"explicit",
+						"solved_by",
+						"requires",
+						"used_skill",
+						"patches",
+						"conflicts_with",
+					];
+					const eKind = EDGE_KINDS.includes(String(args.edgeKind))
+						? String(args.edgeKind)
+						: "explicit";
+					const eNote = String(args.relatedNotes || "").slice(0, 300) || null; // 边语义（为何相关）·300 帽
+					if (relIds.length > 0) {
+						const chk = dbConn.prepare("SELECT id FROM memories WHERE id = ?");
+						const insEdge =
+							dbConn.prepare(`INSERT INTO memories_edges (src, dst, edge_type, weight, valid_at, source_group, last_seen, instruction)
+            VALUES (?, ?, ?, 1.0, ?, 'manual:' || ?, ?, ?)
+            ON CONFLICT(src, dst, edge_type) DO UPDATE SET last_seen = excluded.last_seen, weight = weight + 0.1, instruction = COALESCE(excluded.instruction, memories_edges.instruction)`); // D4 修正沿用：ts 单源；instruction 覆写非空时更新（COALESCE 空不抹旧）
+						for (const rid of relIds) {
+							if (!chk.get(rid)) continue; // 目标不存在静默跳过（不炸写入主路）
+							insEdge.run(
+								Number(info.lastInsertRowid),
+								rid,
+								eKind,
+								ts,
+								finalSource,
+								ts,
+								eNote,
+							);
+							relatedLinked += 1;
+						}
+					}
+				} catch (e2) {
+					try {
+						logger?.warn?.(
+							"[living-memory] edge fail: " + String(e2).slice(0, 60),
+						);
+					} catch {}
+				}
+				// ── A-MEM 写入即反思（step·2026-08-30 goal 五连刀·A-MEM 论文 dynamic linking 意）──
 				//    新条写入后即时扫同 space 同 type 活跃条·题 token 交叠 jaccard 双门（j≥0.20 且 inter≥2·真库标定）→ 建 'auto-link' 边
-				//    （0.4 低档·与 A-20 提炼时 'auto-llm' 互补——本刀覆盖手写路即时链）。零 LLM 零嵌入（纯内存扫描·
-				//    千条毫秒级）。幂等 UPSERT 同 A-13。write 分支与 host stats 隔离（P1② 教训）——计数走应答透出。
+				//    （0.4 低档·与 提炼时 'auto-llm' 互补——本刀覆盖手写路即时链）。零 LLM 零嵌入（纯内存扫描·
+				//    千条毫秒级）。幂等 UPSERT 同 。write 分支与 host stats 隔离（P1② 教训）——计数走应答透出。
 				let reflectLink = null;
 				let best19 = null,
-					bestJ19 = 0; // 作用域上提（#2 盖戳复用——原 try 块内 let 致平级引用 ReferenceError 被 catch 静吞）
+					bestJ19 = 0; // 作用域上提（盖戳复用——原 try 块内 let 致平级引用 ReferenceError 被 catch 静吞）
 				try {
 					const tk19 = (s) => {
 						const out = new Set();
@@ -2363,7 +2447,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 									best19.id,
 									ts,
 									ts,
-									"#19 写入即反思: 题交叠 jaccard=" + bestJ19.toFixed(2),
+									"写入即反思: 题交叠 jaccard=" + bestJ19.toFixed(2),
 								);
 							reflectLink = {
 								id: best19.id,
@@ -2375,12 +2459,12 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 				} catch (e19) {
 					try {
 						logger?.warn?.(
-							"[living-memory] #19 reflect fail: " + String(e19).slice(0, 60),
+							"[living-memory] reflect fail: " + String(e19).slice(0, 60),
 						);
 					} catch {}
 				}
 
-				// ── wave#2 Graphiti 写时矛盾盖戳（design-approved
+				// ── wave Graphiti 写时矛盾盖戳（design-approved四车·病灶⑥「半天件」论证在案·复用 best19 扫描零重算）──
 				//    保守面：否证词在场 AND 数值/版本面有变化 才自动——j≥0.6 且旧条近 72h 同 space 同 type。
 				//    动作：旧条 stale_state='superseded-auto'+valid_to=今日（软失效不删）+立 conflicts 复核案(design note)。
 				//    语义矛盾不自动（走nightly patrol conflicts 人工）。幂等：stale_state IS NULL 才盖·同对 pending 不重立。LEGION_STAMP_OFF 回退。
@@ -2460,8 +2544,8 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						);
 					} catch {}
 				}
-				// ── A-14 写时即时嵌入（13:49 approved·gm syncEmbed 意融入·wave）：fire-and-forget 异步
-				//    不阻塞返回（gm void recaller.syncEmbed 同法）；治「新directive条目要等nightly patrol才有向量」——写后即刻
+				// ── 写时即时嵌入（13:49 approved·graph-memory syncEmbed 意融入·wave）：fire-and-forget 异步
+				//    不阻塞返回（graph-memory void recaller.syncEmbed 同法）；治「新directive条目要等nightly patrol才有向量」——写后即刻
 				//    可被向量路召回。失败静默（nightly patrol惰性补嵌仍兜底）。凭据 60s 缓存共享 vecCredCache（同源单点）。
 				try {
 					if (credResolve && !process.env.LEGION_A14_OFF) {
@@ -2488,7 +2572,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 												.createHash("md5")
 												.update(String(title + " " + content).slice(0, 1500))
 												.digest("hex"),
-										); // 8-31 移植族修复⑥：content_hash 与nightly patrol门同源（md5·title+' '+content 前1500·L2407 同式）——原 sha1(content) 双不一致（算法+基准）致 A-14 条当夜必冗余重嵌
+										); // 8-31 移植族修复⑥：content_hash 与nightly patrol门同源（md5·title+' '+content 前1500·L2407 同式）——原 sha1(content) 双不一致（算法+基准）致 条当夜必冗余重嵌
 									// ── 粒度手术双写过渡（2026-08-31 item2）：chunks 句级嵌入同步嵌（旧表 v4 保留给 fallback/dedup）──
 									try {
 										dbConn.exec(
@@ -2519,7 +2603,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						})();
 					}
 				} catch {}
-				// ── item 写时前缀生成（design-approved
+				// ── item 写时前缀生成（design-approved）：fire-and-forget 异步（同法·不阻塞返回）──
 				//    生成口语前缀 UPDATE spoken_prefix——au 触发器自动重嵌 FTS（监听列已含）。失败静默=nightly patrol回填段兜底。
 				//    双特权/8 窗挂载全走此路（写权空间闸在前已判）。env LEGION_SPOKEN_OFF 回退。
 				try {
@@ -2550,7 +2634,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					count: Number(row.c),
 					...(relatedLinked > 0 ? { relatedLinked } : {}),
 					...(reflectLink ? { reflectLink } : {}),
-					...(stampResult ? { stampResult } : {}), // wave#2 盖戳透出
+					...(stampResult ? { stampResult } : {}), // wave 盖戳透出
 					...(closedTodo ? { closedTodo } : {}), // step：办结闭环结果透出（ok/alreadyDone/closedAt·模型可见闭环证据）
 					...(bodyHits.length > 0
 						? {
@@ -2564,7 +2648,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						? {
 								softWarn: [
 									bodyHits.length > 0
-										? "wording gate hit: 「" + bodyHits.join("、") + "」（）"
+										? "wording gate hit: 「" + bodyHits.join("、") + "」"
 										: null,
 									cGateHint,
 								]
@@ -2685,7 +2769,7 @@ module.exports = {
 				if (Number(ftsCount.c) === 0) {
 					const n = db
 						.prepare(
-							"INSERT INTO memories_fts(rowid, tokens) SELECT id, legion_bigram(title || ' ' || content || ' ' || COALESCE(spoken_prefix, '')) FROM memories WHERE status != 'deleted'", // 09-03 P1 修（audit#20）：回填补 spoken_prefix——与触发器 L1301/1304 同源（重建即丢 spoken 词面根治）,
+							"INSERT INTO memories_fts(rowid, tokens) SELECT id, legion_bigram(title || ' ' || content || ' ' || COALESCE(spoken_prefix, '')) FROM memories WHERE status != 'deleted'", // 09-03 P1 修（audit）：回填补 spoken_prefix——与触发器 L1301/1304 同源（重建即丢 spoken 词面根治）,
 						)
 						.run();
 					ctx.logger?.warn?.(
@@ -2737,7 +2821,7 @@ module.exports = {
 				path: "/living-memory/token-snapshot",
 				handler: (req, res) => {
 					try {
-						// 庚刀修①（2026-09-08）：projcacheV5 双源（新目录优先——旧单文件 09-05 停更=面板冻结 9-4 根因）
+						// 庚批修①（2026-09-08）：projcacheV5 双源（新目录优先——旧单文件 09-05 停更=面板冻结 9-4 根因）
 						const sessions = projcacheRows();
 						const grand = {
 							uncachedIn: 0,
@@ -2849,8 +2933,8 @@ module.exports = {
 		// Injection-hook vocabulary (completion words such as done/closed are deliberately excluded)
 		const OPS_HOOK_RE = /in progress|in-progress|WIP|pending|handover|follow[- ]?up|watching|blocked/i;
 		if (systemPrompt !== undefined) {
-			// 案C（design-approved
-			// context 投影路=每轮 materialize（活·A-01 autorecall 同位）；接口同构（types L47-74）·
+			// 案C(ops note)：section→context 迁移——section 路 scope 层断链（死），
+			// context 投影路=每轮 materialize（活·autorecall 同位）；接口同构（types L47-74）·
 			// 根治B 三链归属+案A 兜底保留不动。order 300 沿用（context 亦按 order 排序）。
 			const stopSection = systemPrompt.context({
 				name: "legion-memory-recall",
@@ -2874,7 +2958,7 @@ module.exports = {
 						} catch {}
 					}
 					try {
-						// 根治B（design-approved
+						// 根治B（design-approved·kickoff 22:46）：归属源改 assemble context 直取——
 						// 恢复型会话 constructor seed 不发 firehose（宿主 dsh-session L342-349 注释铁证）致
 						// sessionOfLastTurn 闭包恒 ''；assemble 上下文每步必真（agent-loop L1025 实证
 						// context.agent.session.id/header.cwd 可用）。三链：cwd 直推 > sid > 闭包兜底。
@@ -2893,8 +2977,8 @@ module.exports = {
 						//    归属失联兜底维持原全库顺序两席行为。
 						const todos = [];
 						const pickedTk = [];
-						// ── 预算化注入·闲时扩容（design-approved
-						//    闲=<40% 压力（pressureTokens 假零面用 surfaceTokens 下限·庚刀同防）→fact 3→5/todo 2→4；非闲维持原值零变（不收缩·maintainer）
+						// ── 预算化注入·闲时扩容（design-approved「先做闲时多注入几条」·紧时收缩搁置）──
+						//    闲=<40% 压力（pressureTokens 假零面用 surfaceTokens 下限·庚批同防）→fact 3→5/todo 2→4；非闲维持原值零变（不收缩·maintainer）
 						const factCap = (() => {
 							try {
 								const cp = projcacheRows().get(String(sid || ""))?.rows
@@ -2962,7 +3046,7 @@ module.exports = {
 							); // 归属失联兜底：全库顺序两席（件②池保 DESC）
 						}
 						todos.reverse(); // item append-only：todo 席 ASC 终态（池保 DESC 取最新+去重原语义·选中后旧→新显示：新待办尾部追加不移动旧条目）
-						// ── v2.4 caller-first（design-approved
+						// ── v2.4 caller-first（design-approved·零other spaces噪音原则）：fact 席=本空间最新2（48h鲜度闸）+ global 最新1（META过滤）──
 						//    治「注入层噪音泵」：xhs 条目只进 xhs 窗注入面；cross-space动态只经 global 干净管道；低频space陈年账被鲜度闸挡（不足让席 global）
 						const past48h = (() => {
 							const d = new Date(
@@ -2994,7 +3078,7 @@ module.exports = {
 										return [];
 									}
 								})()
-							: []; // #22 常驻核心席（帽 3·按验证度·不占 48h 闸席——wb essence 常驻意）
+							: []; // 常驻核心席（帽 3·按验证度·不占 48h 闸席——essence 常驻意）
 						const gPool = db
 							.prepare(
 								"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND space='global' AND COALESCE(event_at, ts) >= ? AND NOT (title LIKE '%收官%' OR title LIKE '%全绿%' OR title LIKE '%完成%' OR title LIKE '%闭环%') ORDER BY id DESC LIMIT " +
@@ -3043,7 +3127,7 @@ module.exports = {
 							}
 						} catch {}
 						if (rows.length === 0 && todos.length === 0) {
-							// 案A止血（design-approved
+							// 案A止血（design-approved）：归属失联（恢复态/未归属）三席齐空时——全库最新 3 条兜底（META 滤·标跨窗）·降级态永不断供
 							const fb = db
 								.prepare(
 									"SELECT id, type, title, space, COALESCE(event_at, ts) AS eff_ts FROM memories WHERE status='active' AND type IN ('fact','lesson','decision') AND NOT (title LIKE '%收官%' OR title LIKE '%全绿%' OR title LIKE '%完成%' OR title LIKE '%闭环%') ORDER BY id DESC LIMIT 3",
@@ -3070,7 +3154,7 @@ module.exports = {
 										.join("\n");
 								if (essRows.length > 0)
 									t +=
-										"\n🧭 常驻核心（#22·亲标不衰·勿当directive）：" +
+										"\n🧭 常驻核心（亲标不衰·勿当directive）：" +
 										essRows
 											.map(
 												(r) =>
@@ -3102,12 +3186,12 @@ module.exports = {
 								.join("\n"); // P4 时标+item ENGRAM citation（[#id·type] 可核查引用）；原注：条目头事件时标（MM-DD·≤8字）——注入即带时间观念，directive「时间时效中轴」注入面落点
 						if (essRows.length > 0)
 							text +=
-								"\n🧭 常驻核心（#22·亲标不衰·勿当directive）：" +
+								"\n🧭 常驻核心（亲标不衰·勿当directive）：" +
 								essRows
 									.map(
 										(r) => "[" + r.type + "] " + String(r.title).slice(0, 30),
 									)
-									.join("｜"); // #22 常驻席：独立行不占 3 席（wb essence 意）
+									.join("｜"); // 常驻席：独立行不占 3 席（essence 意）
 						// ── 回显step（21:43 maintainer·28375d 案治理）：todo 席directive保护——「ops/pending approval/裁决」类directive型待办不被任务型 todo 挤出注入席（在 text 组装前做） ──
 						try {
 							// 8-31 长尾乙档（F2-4）：RE 与 LIKE 提同一词源——原 RE 7 词/LIKE 5 词缺「申请件/裁决」致该两词directive todo 顶替通道失效；>=2 放宽 >=1（单席态替换不扩预算）
@@ -3157,7 +3241,7 @@ module.exports = {
 									}; // 顶替最旧一席（directive型优先·双席内不扩预算）
 							}
 						} catch {}
-						// ── #11 PlanFence（wave·stale-plan 最小刀·吸收计划·09-07 approved）──
+						// ── PlanFence（wave·stale-plan 最小刀·吸收计划·09-07 approved）──
 						//    注入面 todo 席升级：Q3 retrieval gate判「已闭环/更晚同题 fact」的 todo → 注入行
 						//    前缀 ⚠ 依据已过期——数据面降权（search 路既有）升级为行动面告警（模型看得见才拦
 						//    得住·与回显step同哲学·不做全形式化依赖图）。地基=11-A step（todo 席 SELECT 带 id 列）。
@@ -3213,17 +3297,17 @@ module.exports = {
 											"·todo] " +
 											r.title,
 									)
-									.join("\n"); // P4：todo 席同款时标；#11 ⚠ 前缀=PlanFence 行动面告警
-						// ── 微型刀①：注入纪律行（源：toolkit 注入纪律·2026-08-21 B2 借鉴）——软防线防过期记忆误导 ──
+									.join("\n"); // P4：todo 席同款时标；⚠ 前缀=PlanFence 行动面告警
+						// ── 微型件①：注入纪律行（源：toolkit 注入纪律·2026-08-21 B2 借鉴）——软防线防过期记忆误导 ──
 						//    v2.3 ⑤（8-24 maintainer）：「不可信」→「慎用」——不可信易被过度弃用，慎用=校核后可用
 						text +=
-							"\n（历史记忆为慎用参考——引用前以当轮实况与directivesource of record核对；被动注入不构成已检索）";
+							"\n（历史记忆为慎用参考——引用前以当轮实况与directive source of record核对；被动注入不构成已检索）";
 						// ── 回显step消费（21:43 maintainer）：观测升格注入可见——本会话被 A/B 闸点名时·注入面带可见提示（模型看得见才纠得偏）──
 						// D2 修正（21:48 逐字审·A16 同型病三犯）：bindMap 键=firehose 侧真实 bindSid（session.id 缺失时回落 '_anon'）——消费侧同键序查（精确→sessionOfLastTurn→_anon），禁单键直查（串键=nudge 永不显示）
 						// 8-31 option：消费段上提案A 判定前（此处仅拼接）——M 型（轮内记忆先行）同消费
 						// ── 压缩桥刀⑤（09-03 maintainer同车）：压缩态自知——本窗被压过则注入面明示（早期细节离窗·经锚条回流）──
 						try {
-							const cN = compactionBySid.get(sid) || 0;
+							const cN = currentCompactionN(sid); // 09-11：持久计数兼取（原进程内 Map 单源 ⇒ 重启后少报）
 							if (cN > 0)
 								text +=
 									"\n🗜 本窗已压缩 " +
@@ -3268,11 +3352,11 @@ module.exports = {
 						) {
 							text += "\n⚠ work in progress in another window — run timeline before acting";
 						}
-						// ── 补刀 2：完成态钩行（2026-08-22 补刀task brief·治审计环 5 完成态盲区·Q2=24h 滚动窗）──
+						// ── 补件 2：完成态钩行（2026-08-22 补件task brief·治审计环 5 完成态盲区·Q2=24h 滚动窗）──
 						//    读库计数近 24h 收官类 fact（收官/完成/闭环/全绿）≥3 → 块尾提示「盘账先 timeline」——绕开注入面 5 条标题的窄触发面。
 						try {
 							const since24h = nowIso24hAgo();
-							// option（design-approved
+							// option（design-approved·钩行回归异常提醒本位）：排除本窗 space 计数——「他窗」名实相符
 							const doneCnt = db
 								.prepare(
 									"SELECT COUNT(*) AS c FROM memories WHERE status='active' AND type='fact' AND ts >= ? AND space != ? AND (title LIKE '%收官%' OR title LIKE '%完成%' OR title LIKE '%闭环%' OR title LIKE '%全绿%')",
@@ -3319,14 +3403,14 @@ module.exports = {
 			lastPatrolDay: "",
 		};
 		let buffer = "";
-		// ── A-12 消息级水位（wave首刀·design-approved
+		// ── 消息级水位（wave首发·design-approved「补」·graph-memory getUnextracted/markExtracted 水位意融入）──
 		//    治：buffer 纯字符流拼接=提炼失败后重抽全段（重放风险）；水位=turn/seq 粒度精确追踪抽到哪。
 		//    审计 D2 修正（13:44·键族同型第 N 犯）：原插件级单例队列=多窗消息混队——甲窗成功推水位后乙窗
 		//    消息被当已抽跳过（跨窗丢抽）。改 Map<sid, {msgs, watermark, seq}> 会话分账（bindMap 同款结构）。
 		//    sid 键源=session.id（firehose 主键·L996 sessionOfLastTurn 同源）；env LEGION_A12_OFF 一键回退旧 buffer 路。
 		const pendingBySid = new Map(); // sid -> { msgs: [{turn,role,text,seq}], watermark: number, seq: number, lastTs: number }
 		const A12_OFF = !!process.env.LEGION_A12_OFF;
-		// ── A-25 提炼缓冲落盘持久化（wave·23:12 approved·治 41 发重启清缓冲·extract 四连空手案）──
+		// ── 提炼缓冲落盘持久化（wave·23:12 approved·治 41 发重启清缓冲·extract 四连空手案）──
 		//    内存分账序列化落 organ_meta('extract_buffer')：启动恢复+节流落盘（5s）+成功/清账强制落盘。
 		//    帽：落盘总量 2000 条（超丢最旧会话账）·LEGION_A25_OFF 回退纯内存态。
 		const A25_OFF = !!process.env.LEGION_A25_OFF;
@@ -3373,7 +3457,7 @@ module.exports = {
 				).run(JSON.stringify(dump));
 				a25LastFlush = Date.now(); // 写库成功才消耗节流窗（F3-4②）
 			} catch (eF) {
-				// 8-31 长尾甲档③（F3-4①）：吞错无出口修——计数+节流 warn（A-25 治本承诺静默失效=sentry无从发现）
+				// 8-31 长尾甲档③（F3-4①）：吞错无出口修——计数+节流 warn（治本承诺静默失效=sentry无从发现）
 				stats.a25FlushErrors = (stats.a25FlushErrors || 0) + 1;
 				if (Date.now() - a25FlushWarnAt > 60000) {
 					a25FlushWarnAt = Date.now();
@@ -3390,7 +3474,7 @@ module.exports = {
 			}
 		}
 		try {
-			// 启动恢复：跨重启对话积累不丢（A-25 核心——41 发重启案的治本）
+			// 启动恢复：跨重启对话积累不丢（核心——41 发重启案的治本）
 			if (!A25_OFF) {
 				const row = db
 					.prepare("SELECT v FROM organ_meta WHERE k = 'extract_buffer'")
@@ -3413,7 +3497,7 @@ module.exports = {
 				}
 			}
 		} catch (eRB) {
-			stats.bufferRestoreErrors = (stats.bufferRestoreErrors || 0) + 1; // P2修#30（09-03 audit）：启动恢复失败透出（原静默=脏值积压全账丢失零观测·⑬ 出口）
+			stats.bufferRestoreErrors = (stats.bufferRestoreErrors || 0) + 1; // P2 fix（09-03 audit）：启动恢复失败透出（原静默=脏值积压全账丢失零观测·⑬ 出口）
 			ctx.logger?.warn?.(
 				"[living-memory] extract_buffer restore failed (#" +
 					stats.bufferRestoreErrors +
@@ -3426,9 +3510,9 @@ module.exports = {
 		const guard = { pausedUntil: 0 }; // LlmFailureGuard 状态（吸inbox⑤·401/403/404 熔断）
 		const preguard = { pausedUntil: 0 }; // 件三车：AUDN 预裁独立熔断态（模型分家·与提炼 guard 解连坐）
 
-		// ── wave#1 AUDN 预裁决（design-approved
+		// ── wave AUDN 预裁决（design-approved四车·治 conflicts 92 案积压）：pending 案 LLM 四态预裁——
 		//    只写建议（pre_verdict/pre_reason/pre_at）·maintainer终批才执行（主权不动）。通道复用 EXTRACT_API/MODEL/guard。
-		//    #4 LLM 自相矛盾防御（同车并入·kg_clean 教训）：verdict 枚举外或 verdict-reason 词面矛盾 → 降级 manual（保守解）。
+		//    LLM 自相矛盾防御（同车并入·kg_clean 教训）：verdict 枚举外或 verdict-reason 词面矛盾 → 降级 manual（保守解）。
 		const PRECLASSIFY_VERDICTS = new Set([
 			"merge-keep-new",
 			"merge-keep-old",
@@ -3542,7 +3626,7 @@ module.exports = {
 					return { skipped: true, reason: "surgery-flag" };
 				}
 			} catch {}
-			// ── A-12 水位路源（wave）：getUnextracted 同语义——只取 seq>watermark 的待抽段（本会话分账）。
+			// ── 水位路源（wave）：getUnextracted 同语义——只取 seq>watermark 的待抽段（本会话分账）。
 			//    审计 D1 修正（13:44）：源优先级=手写显式源（opts.source）> 本窗水位段 > 旧 buffer 回落——
 			//    防手写触发段的 historyText 被水位路劫持（auto=false 路必须用调用方指定源）。
 			const _a12sid = (opts && opts.sid) || sessionOfLastTurn || "_anon"; // step-2（10:34 maintainer·治 D-新2 他窗不可提）：显式 sid 优先——memory organ特权用法可提他窗账
@@ -3552,7 +3636,7 @@ module.exports = {
 				: [];
 			let source = opts && typeof opts.source === "string" ? opts.source : "";
 			let sourceViaWatermark = false;
-			const unextractedWatermarkRef = { seqs: [] }; // A-12：本次抽的 seq 集合（成功推水位用·作用域提升至 accepted 段可达）
+			const unextractedWatermarkRef = { seqs: [] }; // 本次抽的 seq 集合（成功推水位用·作用域提升至 accepted 段可达）
 			if (!source && _a12unextracted.length > 0) {
 				// step-1（10:34 maintainer·治 D-新1 长窗死锁）：last-12k→first-12k-after-watermark 滚动消化——
 				// 原尾窗帽致超长账只见尾部·尾部已手动入册→LLM 判无可记→0→水位永冻=死锁。改从头按消息累积取段·多轮逐段消化全账。
@@ -3569,7 +3653,7 @@ module.exports = {
 					_taken.push(m);
 					_len += piece.length;
 				}
-				// ── wave#3 assistant 过程叙述蒸馏（design-approved
+				// ── wave assistant 过程叙述蒸馏（design-approved四车·治 12K 窗稀释——
 				//    过程行（让我/接下来/我将…开头）占窗挤掉实质内容·12 词表行级滤除·仅滤 assistant 行）──
 				let _distilled = 0;
 				const _distill = _taken.map((m) => {
@@ -3605,7 +3689,7 @@ module.exports = {
 				unextractedWatermarkRef.acct = _a12acct; // 记账指针（成功推水位用）
 				sourceViaWatermark = true;
 			}
-			if (!source && !sourceViaWatermark) source = opts.fallback || buffer; // P0修（09-03 audit#12）：fallback 回落源——手动 extract 带 events 原文时不污全局 buffer
+			if (!source && !sourceViaWatermark) source = opts.fallback || buffer; // P0修（09-03 audit）：fallback 回落源——手动 extract 带 events 原文时不污全局 buffer
 			if (source.trim().length < 40)
 				return { skipped: true, reason: "buffer too small" };
 			// ── LlmFailureGuard（2026-08-24 吸inbox⑤·graph-memory 设计 42 行）：401/403/404 熔断 10min·429/5xx 重试 3 次指数退避 ──
@@ -3632,7 +3716,7 @@ module.exports = {
 					try {
 						response = await fetch(EXTRACT_API, {
 							method: "POST",
-							signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS), // issue#1 修②：应用级全局超时（超时 abort 走 catch → fetch fail skip·不再仅靠 Undici 默认 300s×2）
+							signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS), // issue 修②：应用级全局超时（超时 abort 走 catch → fetch fail skip·不再仅靠 Undici 默认 300s×2）
 							headers: {
 								"Content-Type": "application/json",
 								Authorization: "Bearer " + cred.value,
@@ -3701,7 +3785,7 @@ module.exports = {
 					const content = stripUrls(String(e.content)).slice(0, 1500);
 					if (!["fact", "decision", "todo", "lesson"].includes(type)) continue;
 					if (title.length < 2 || content.length < 4) continue;
-					// ── MP吸收#4 计数旧值过滤（kg_grow 同款·design-approvedendingN」类噪音）。
+					// ── 计数旧值过滤（kg_grow 同款·design-approved「开始吸收」）：整题剥尾括号缀后=纯数字/数字+量词=瞬时计数快照非知识——不入正库（随系统增长必过时·治「抽屉N条/pendingN」类噪音）。
 					//    宽容面：日期(含-)/版本(含.)/范围(5-50)/题含动词等其余信息不拦（仅整题纯计数态拦·counter countSkipCount）。
 					if (
 						/^\d+\s*(条|个|项|件|篇|张|次|份|款|组|台|人|天|小时|分钟|KB|MB|GB|条目|案)?$/.test(
@@ -3722,7 +3806,7 @@ module.exports = {
 						);
 						continue;
 					}
-					// ── A-11 敏感闸（wave·design-approved
+					// ── 敏感闸（wave·design-approved最小版）：directive原文/凭据/未裁冲突类不入 auto 提炼 ──
 					if (SENSITIVE_RE.test(title) || SENSITIVE_RE.test(content)) {
 						stats.sensitiveSkipCount = (stats.sensitiveSkipCount || 0) + 1;
 						ctx.logger?.warn?.(
@@ -3741,7 +3825,7 @@ module.exports = {
 							);
 						}
 					}
-					// ── global 专属词路由（design-approved
+					// ── global 专属词路由（design-approved global 两刀·刀A 源头）：sessionOrgan 判不出时按词面路由，判不出才 global ──
 					// 两级词表（brain 23:58 审理+主刀审计）：强词触发；弱词不单独路由；抑制词命中即留 global(design note)
 					const routeByKeyword = (t, c) => {
 						const text = String(t || "") + " " + String(c || "");
@@ -3764,7 +3848,7 @@ module.exports = {
 							);
 						}
 					}
-					// P0修（09-03 audit#10）：中断重抽闸——水位在循环后推，中途异常已 COMMIT 条目下轮重抽防重放（checksum 提炼路同式 sha1(entryType+title+content)·轻闸挡逐字重·近重复由nightly patrol去重兜）
+					// P0修（09-03 audit）：中断重抽闸——水位在循环后推，中途异常已 COMMIT 条目下轮重抽防重放（checksum 提炼路同式 sha1(entryType+title+content)·轻闸挡逐字重·近重复由nightly patrol去重兜）
 					if (
 						db
 							.prepare(
@@ -3776,7 +3860,7 @@ module.exports = {
 						continue;
 					}
 					db.exec("BEGIN"); // step B-5：主+边同事务（防崩窗孤儿边）——try 内 ·catch 回滚
-					// ── MP吸收#11 external 信任分级（wb 投毒防线同款·论文 2606.24322）：批次级判定——提炼源（source 文本）URL≥3 = 外部粘贴为主 → 本批条目 confidence 0.5（内容可总结·来源属性保留防洗白·检索面外显）
+					// ── external 信任分级（投毒防线同款·论文 2606.24322）：批次级判定——提炼源（source 文本）URL≥3 = 外部粘贴为主 → 本批条目 confidence 0.5（内容可总结·来源属性保留防洗白·检索面外显）
 					const extBatch =
 						(String(source).match(/https?:\/\//g) || []).length >= 3;
 					const insInfo = ins.run(
@@ -3788,8 +3872,8 @@ module.exports = {
 						"auto:" + _a12sid,
 						sha1(entryType + title + content),
 						extBatch ? 0.5 : 1.0,
-					); // step Z1②：source 归因同源 _a12sid；8-31 移植族修复①：run 返回值存 insInfo——node:sqlite 的 lastInsertRowid 在 run 结果上（statement 本体无·原 A-20 引用幻属性 NaN→NULL 致产边整路死·正库 0 条铁证）
-					// ── A-20 提炼产边（wave·16:47 approved·gm 抽取产边意）：relatedHint「relates:<关键词>」→
+					); // step Z1②：source 归因同源 _a12sid；8-31 移植族修复①：run 返回值存 insInfo——node:sqlite 的 lastInsertRowid 在 run 结果上（statement 本体无·原 引用幻属性 NaN→NULL 致产边整路死·正库 0 条铁证）
+					// ── 提炼产边（wave·16:47 approved·graph-memory 抽取产边意）：relatedHint「relates:<关键词>」→
 					//    FTS 查同 space 既有条 top1 建 auto 边（edge_type='auto-llm'·weight 0.5 低档·instruction 带 hint 原文）。
 					//    边供给从nightly patrol jaccard 单源→双源；目标查不到静默跳过；预算帽 5 边/轮。
 					try {
@@ -3817,7 +3901,7 @@ module.exports = {
 										nowIso(),
 										_a12sid.slice(0, 40),
 										nowIso(),
-										"A-20 提炼关联: " + kw,
+										"提炼关联: " + kw,
 									); // 8-31 移植族修复①：insInfo 同源+source_group 归因从 sessionOfLastTurn 改 _a12sid（Z1 同型漏改·opts.sid≠当前窗时错归因）
 									stats.autoEdges = (stats.autoEdges || 0) + 1;
 								}
@@ -3849,11 +3933,11 @@ module.exports = {
 					const a = unextractedWatermarkRef.acct;
 					a.watermark = Math.max(a.watermark, ...unextractedWatermarkRef.seqs);
 					stats.watermarkAdvanced = a.watermark;
-					a25Flush(true); // A-25：消化强制落盘（水位持久）
+					a25Flush(true); // 消化强制落盘（水位持久）
 				}
 				if (accepted.length > 0) {
 					buffer = ""; // 提炼成功后清空缓冲（旧路）
-					// A-09 配套（审计 D7）：信号在成功路径消化（与 A-12 水位同生命周期）——失败留队下轮再试
+					// 配套（审计 D7）：信号在成功路径消化（与 水位同生命周期）——失败留队下轮再试
 					if (stats.signalArmed) {
 						signalQ = [];
 						stats.signalArmed = false;
@@ -3914,15 +3998,15 @@ module.exports = {
 			return [];
 		}
 
-		// ── A-03/A-04 图谱引擎(design note)：PPR 查询相关加成+社区——gm pagerank/community 意融入 ──
-		//    图源=memories_edges 活边（cooccur 派生+A-13 explicit 人知·统一无向图）·30s 结构缓存（gm 同款）；
+		// ── 图谱引擎(design note)：PPR 查询相关加成+社区——graph-memory pagerank/community 意融入 ──
+		//    图源=memories_edges 活边（cooccur 派生+explicit 人知·统一无向图）·30s 结构缓存（graph-memory 同款）；
 		//    PPR：种子=当前命中行·teleport 回种子（带查询相关性·非均匀 PageRank）·damping 0.85·15 迭代——
 		//    治step静态加成「所有 cooccur 伙伴平权」：与查询种子近的伙伴高分·远的低分。
-		//    社区：Label Propagation（nightly patrol 13.5 段建表 memory_communities）·供水位泛化路（A-02）。
+		//    社区：Label Propagation（nightly patrol 13.5 段建表 memory_communities）·供水位泛化路。
 		const PPR_GRAPH_CACHE_MS = 30_000;
 		let pprGraphCache = { at: 0, adj: null };
 		function pprBuildGraph(qKey, qTokens) {
-			// ── wave#14 KG 查询条件化边权（design-approved
+			// ── wave KG 查询条件化边权（design-approved四车·MemORAI Dynamic Weighted PPR 意）──
 			//    缓存改 query 键（qh 不匹配即重建·30s 同 query 命中）；边权乘 (1+0.5×overlap)——overlap=query tokens
 			//    对「边 instruction ∪ 端点 title tokens」的覆盖率（查询相关边浮升·种子仍 FTS∪vec 不变）。
 			//    qTokens 空（兜底路/LEGION_PPR_QUERY_OFF）→ 因子全 1=退化原行为。
@@ -3936,10 +4020,10 @@ module.exports = {
 				return pprGraphCache.adj;
 			const edges = db
 				.prepare(`SELECT src, dst, weight, instruction FROM memories_edges WHERE invalid_at IS NULL
-        AND src IN (SELECT id FROM memories WHERE status='active')
-        AND dst IN (SELECT id FROM memories WHERE status='active')`)
-				.all();
-			// A-19（wave）：PPR 边权消费 validatedCount——重复验证的锚条边权浮升（gm validated_count 浮权意）
+        AND src IN (SELECT id FROM memories WHERE status='active' AND (valid_to IS NULL OR valid_to > ?))
+        AND dst IN (SELECT id FROM memories WHERE status='active' AND (valid_to IS NULL OR valid_to > ?))`)
+				.all(nowIso(), nowIso()); // 审计③修（design-approved「修」·检索链改动）：活边图原只滤 status ⇒ 21 条沉底条（valid_to 已到点·status 仍 active）的 81 条边**全权重入图**，检索层 ×0.2 沉底意图在图传播层缺位。修＝条目轴同口径（valid_to IS NULL OR valid_to > now）与检索层沉底判据对齐（短串 'YYYY-MM-DD' 字典序 < 同日带时刻串 ⇒ 当日到点即排除）
+			// （wave）：PPR 边权消费 validatedCount——重复验证的锚条边权浮升（graph-memory validated_count 浮权意）
 			try {
 				const vcs = db
 					.prepare(
@@ -3959,7 +4043,7 @@ module.exports = {
 					if (f2) e.weight = Number(e.weight) * f2;
 				}
 			} catch {}
-			// ── #14 查询因子：qTokens 非空时预取端点 title tokens+边 instruction tokens → 覆盖率因子 ──
+			// ── 查询因子：qTokens 非空时预取端点 title tokens+边 instruction tokens → 覆盖率因子 ──
 			let qSet = null;
 			let titleTok = null;
 			if (qTokens && qTokens.length && !process.env.LEGION_PPR_QUERY_OFF) {
@@ -4018,7 +4102,7 @@ module.exports = {
 					for (const [id, score] of pr) {
 						const nbrs = adj.get(id);
 						if (!nbrs || nbrs.length === 0) {
-							// 悬挂点：概率归种子（gm 同法）
+							// 悬挂点：概率归种子（graph-memory 同法）
 							for (const s of seed)
 								next.set(s, (next.get(s) || 0) + (d * score) / seed.size);
 							continue;
@@ -4042,17 +4126,95 @@ module.exports = {
 		}
 
 		// ── 观察：session/event firehose（计数 + 文本缓冲 + turn/end 限频自动提炼）──
-		// ── 融合刀②·B inbox⇄living memory绑定 + A 开局三查（design-approved
+		// ── 融合刀②·B inbox⇄living memory绑定 + A 开局三查（design-approved·观测段：仅提示不拦截）──
 		//    审计修正 19:05：bind 按 sessionId 分账（原插件级单例——多会话并发跨污染：甲窗读inbox的信号会让乙窗永不告警）
 		const bindMap = new Map(); // sessionId -> { inboxSeen, memCalled, userTurns, warnedA, warnedB }
-		const compactionBySid = new Map(); // 09-03 压缩桥：sid -> 本会话压缩次数（刀② end 计数·刀⑤ 注入面读·sweep 2h 过期同扫）
-		// ── A-09 信号队列（wave）：gm gm_signals 表意——提炼候选优先触发器（三真信号·40 帽）
+		const compactionBySid = new Map(); // 09-03 压缩桥：sid -> 本会话压缩次数（刀② end 计数·刀⑤ 注入面读·sweep 2h 过期同扫）——⚠ 09-11 起降为**进程内兜底**，主计数在 organ_meta（见下）
+		// ── 压缩序数持久化（design-approved「同意」＋同日**独立审计 B 路**加固）：
+		//    病灶：原＝**进程内 Map 单源** ⇒ 进程重启即归零 ⇒ 同会话第二次压缩仍写「第 1 次」，
+		//    与重启前那条**同名**（实测 09-11 本会话  20:11 与  22:08 双条同名·检索面旧条排前）。
+		//    **审计加固两条**（B 路真缺陷 D2/D3 ／ 改进 I1）：
+		//      ①**第三源自愈**：单 DB 键仍是单点（键被清/换库/写失败 ⇒ 重启重号），且**存量会话无回填**
+		//        （本会话即为病灶案例：库中两条同名锚条、无计数键 ⇒ 单选持久键仍会写「第 3 条第 1 次」）
+		//        ⇒ 取**库内既有锚条数**为事实源（`source='auto:<sid>' ∧ title LIKE '上下文压缩锚%'`）。
+		//        三源取大：进程内 Map／organ_meta 键／库内锚条数——任一源活着即不重号。
+		//      ②**读侧补出口**（⑬ 对称）：原 `catch { return Map }` 零出口＝DB 不可读时注入面**永久静默少报**。
+		//    法同 bumpNudgeTotal（v+1 型 UPSERT 免竞态）；键=`compaction_count.<sid>`（可 grep·不与他键撞）。
+		//    ⚠ 性能：`memories.source` **无二级索引**（全表扫 ~ms 级）⇒ 读侧**仅在键缺失时**才查第三源（键在即跳过）。
+		const anchorCountOf = (sid) => {
+			try {
+				const r = db
+					.prepare(
+						"SELECT COUNT(*) c FROM memories WHERE source = ? AND title LIKE '上下文压缩锚%'",
+					)
+					.get("auto:" + sid);
+				return Number(r && r.c) || 0;
+			} catch {
+				return 0; // ⑬：读失败按「无锚条」计（三源取大里的保守项·出口＝返回值）
+			}
+		};
+		const nextCompactionN = (sid) => {
+			const fallback = (compactionBySid.get(sid) || 0) + 1; // 进程内兜底
+			const anchorN = anchorCountOf(sid) + 1; // 第三源：库内既有锚条数（存量会话/键被清/写失败时的事实源）
+			try {
+				db.prepare(
+					"INSERT INTO organ_meta(k, v) VALUES(?, '1') ON CONFLICT(k) DO UPDATE SET v = CAST(CAST(v AS INTEGER) + 1 AS TEXT)",
+				).run("compaction_count." + sid);
+				const r = db
+					.prepare("SELECT v FROM organ_meta WHERE k = ?")
+					.get("compaction_count." + sid);
+				const persisted = Number(r && r.v) || 0;
+				// 三源取大（序数宁大勿小·防同号）：进程内／持久键／库内既有锚条数
+				const n = Math.max(fallback, persisted, anchorN);
+				// **回写**（审计 I1：DB 滞后不自愈）：持久键落后于任一源时刷到 n——否则读侧按滞后值少报
+				if (n > persisted) {
+					db.prepare(
+						"INSERT INTO organ_meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+					).run("compaction_count." + sid, String(n));
+				}
+				return n;
+			} catch (eC) {
+				stats.compactionBridgeErrors = (stats.compactionBridgeErrors || 0) + 1; // ⑬ catch 必须有出口（归因看下方 warn 文案）
+				ctx.logger?.warn?.(
+					"[living-memory] compaction counter persist failed (#" +
+						stats.compactionBridgeErrors +
+						"): " +
+						String(eC).slice(0, 60),
+				);
+				return Math.max(fallback, anchorN); // 持久面失败也要吃第三源（审计 I1：DB 滞后不自愈）
+			}
+		};
+		const currentCompactionN = (sid) => {
+			// 注入面只读（不写）：三源取大（键缺失时才查第三源·免每轮全表 COUNT）
+			let persisted = 0;
+			try {
+				const r = db
+					.prepare("SELECT v FROM organ_meta WHERE k = ?")
+					.get("compaction_count." + sid);
+				persisted = Number(r && r.v) || 0;
+			} catch (eR) {
+				// ⑬ 出口（审计 D3）：读失败不再静默——计数＋warn 与写侧对称（复用既有键·零新增）
+				stats.compactionBridgeErrors = (stats.compactionBridgeErrors || 0) + 1;
+				ctx.logger?.warn?.(
+					"[living-memory] compaction counter read failed (#" +
+						stats.compactionBridgeErrors +
+						"): " +
+						String(eR).slice(0, 60),
+				);
+			}
+			return Math.max(
+				persisted,
+				persisted === 0 ? anchorCountOf(sid) : 0,
+				compactionBySid.get(sid) || 0,
+			);
+		};
+		// ── 信号队列（wave）：graph-memory gm_signals 表意——提炼候选优先触发器（三真信号·40 帽）
 		let signalQ = []; // {type, at, hint}
 		const episodicRate = new Map(); // sessionId -> { turns, at }——read_episodic 轻频控（补件④：每窗 4 真用户轮 1 次）
 		const INBOX_RE = /模块[/\\][^/\\"]+[/\\]inbox[/\\]|\/inbox\/|inbox\/2026-/; // inbox路径 pattern（读inbox动作识别）
 		const M_EXEMPT_RE =
 			/^(继续|同意|好|嗯|行|可以|OK|ok|wrap-up|重启好了|多谢|谢谢|收到|是|对)\s*[。.!！~～]?$/; // option豁免短令词表（单源——user/message 留档与 turn/end 判定两用·F2-4 一源两用同法）
-		// ── 3 天窗刀（design-approved累计·v+1 型 UPSERT 免竞态·a25Flush 锁竞争教训同防）──
+		// ── 3 天窗刀（design-approved「按推荐」）：option nudge 两率持久化——观测窗 7→3 天·打戳即 SQL 原子自增 organ_meta（跨重启累计·v+1 型 UPSERT 免竞态·a25Flush 锁竞争教训同防）──
 		const bumpNudgeTotal = (k) => {
 			try {
 				db.prepare(
@@ -4119,10 +4281,10 @@ module.exports = {
 							bd.nudgeMShownAt = 0;
 						}
 					}
-					// ── A-09 六信号桥(design note)：tool_error/user_correction/
+					// ── 六信号桥(design note)：tool_error/user_correction/
 					//    task_completed 三真信号入提炼候选优先队列——用户纠错与工具报错不再等限频窗·下轮 turn/end 即提炼。
 					//    审计 D8 收紧（15:25·自伤预防）：误信号=伪优先触发（白耗提炼次数+signalQ 假账）——
-					//    ①user_correction 补 user/message 真源判（纠错主面在用户消息非工具参数·gm user_correction 语义正源）
+					//    ①user_correction 补 user/message 真源判（纠错主面在用户消息非工具参数·graph-memory user_correction 语义正源）
 					//    ②task_completed 词表收紧（「完成毕」易在指令复述中误中——需连「收官/wrap-up」语境）
 					//    ③tool_error 只认 error 真值字段（status 字符串 'error' 为下游结果事件面·tool/call 段恒不中=死面删除）。
 					try {
@@ -4145,7 +4307,7 @@ module.exports = {
 						}
 					} catch {}
 				}
-				// ── P0修（09-03 audit#8）：tool_error 死面根治——宿主 tool/call 无 error 字段（真值在 tool/result message.isError·dsh-session L308-313），补独立分支（A-09 信号通道接通）
+				// ── P0修（09-03 audit）：tool_error 死面根治——宿主 tool/call 无 error 字段（真值在 tool/result message.isError·dsh-session L308-313），补独立分支（信号通道接通）
 				if (t === "tool/result" && !process.env.LEGION_SIGNALS_OFF) {
 					try {
 						const rm = event.data?.message || event.data || {};
@@ -4165,7 +4327,7 @@ module.exports = {
 						stats.signalErrors = (stats.signalErrors || 0) + 1;
 					}
 				}
-				// ── 8-31 移植族修复③：user_correction 从 tool/call 块内解放——原判 t==='user/message' 嵌在 t==='tool/call' 分支内恒假（A-09 纠错信号自上线即死·宿主实码对照settled）；user/message 经 session/event 通道同机到达，独立同层判定
+				// ── 8-31 移植族修复③：user_correction 从 tool/call 块内解放——原判 t==='user/message' 嵌在 t==='tool/call' 分支内恒假（纠错信号自上线即死·宿主实码对照settled）；user/message 经 session/event 通道同机到达，独立同层判定
 				try {
 					if (
 						!process.env.LEGION_SIGNALS_OFF &&
@@ -4210,9 +4372,9 @@ module.exports = {
 					bd.warnedB = true;
 					bd.pendingNudge = "B"; // 回显step（21:43 maintainer·28375d 案治理）：观测升格——下轮注入面带可见提示（模型看得见·不再只进日志）
 					ctx.logger?.warn?.(
-						"[living-memory] 刀②B 观测[" +
+						"[living-memory] nudge B watch[" +
 							bindSid.slice(0, 12) +
-							"]：本会话已读inbox但未查living memory——「读inbox⇄查living memory」绑定提示（融合刀②观测段·已升格注入面可见）",
+							"]: inbox was read but memory was never queried — the two go together (also shown in the injected context)",
 					);
 				}
 				// A 告警：前 2 真用户轮内零 memory 调用（a quick window一次待办查询即满足）
@@ -4225,9 +4387,9 @@ module.exports = {
 					bd.warnedA = true;
 					if (!bd.pendingNudge) bd.pendingNudge = "A"; // 同上·升格注入可见
 					ctx.logger?.warn?.(
-						"[living-memory] 刀②A 观测[" +
+						"[living-memory] nudge A watch[" +
 							bindSid.slice(0, 12) +
-							"]：开局两轮未检 memory 调用——开局三查提示（融合刀②观测段·已升格注入面可见）",
+							"]: two user turns in with no memory call — check memory first (also shown in the injected context)",
 					);
 				}
 				// ── 8-31 option（轮内记忆先行闸·approved·观测级先行——刀②A/B 同法：先观测后拦截）：本轮有真用户令且未调 memory 且离上次查≥3 真用户轮且非豁免短令 → 下轮注入面提示
@@ -4295,7 +4457,7 @@ module.exports = {
 				if (text.length > 0) {
 					buffer += (buffer ? "\n---\n" : "") + text.slice(0, 3000);
 					if (buffer.length > 12000) buffer = buffer.slice(-12000);
-					// ── A-12 摄取面（wave·审计 D2 后=按会话分账入队）：消息级 {turn,role,text,seq} 结构化
+					// ── 摄取面（wave·审计 D2 后=按会话分账入队）：消息级 {turn,role,text,seq} 结构化
 					if (!A12_OFF) {
 						const sid =
 							(session && typeof session.id === "string"
@@ -4319,17 +4481,17 @@ module.exports = {
 						for (const a of pendingBySid.values())
 							pend += a.msgs.filter((m) => m.seq > a.watermark).length;
 						stats.pendingMsgsCount = pend;
-						a25Flush(); // A-25：摄取节流落盘（5s）
+						a25Flush(); // 摄取节流落盘（5s）
 					}
 					stats.bufferedChars = buffer.length;
 				}
 			}
 			// 自动提炼触发：turn/end + 限频 + 批量阈值即时通道 + 信号优先通道
-			// ── A-08/A-09 双通道：①buffer≥600 即时；②信号队列有货（近 10min）优先触发不等限频——
-			//    用户纠错/工具报错当场沉淀（gm 信号驱动意·治「他窗照犯」）。
+			// ── 双通道：①buffer≥600 即时；②信号队列有货（近 10min）优先触发不等限频——
+			//    用户纠错/工具报错当场沉淀（graph-memory 信号驱动意·治「他窗照犯」）。
 			//    审计 D7 修正（15:25）：runExtract 系异步不阻塞 firehose——原紧邻 `signalQ=[]` 在提炼**发起时**
 			//    即清队（不等成败）→提炼失败（guard 熔断/网络退避）信号已丢=纠错白触发。修：清队移入提炼成功路径
-			//    （A-12 watermark 推进同点·信号与水位同生命周期：成功才消化）。失败留队下轮 turn/end 再试。
+			//    （watermark 推进同点·信号与水位同生命周期：成功才消化）。失败留队下轮 turn/end 再试。
 			if (t === "turn/end" && buffer.trim().length > 200 && !extracting) {
 				const now = Date.now();
 				const batchReady = buffer.length >= 600;
@@ -4349,10 +4511,10 @@ module.exports = {
 					runExtract({ auto: true });
 				}
 			}
-			// ── 压缩↔living memory联动桥（design-approved
+			// ── 压缩↔living memory联动桥（design-approved「同意」·刀①②·压缩机制体检终报呈件）──
 			//    实勘依据：dsh-compaction-basic compactSurfaceRegion——start 在摘要前 append（被压段原文仍在 events），
 			//    end 带成败；session.append 无差别过 session/event firehose（dsh-session L1469-1476）→ 本监听零宿主改动。
-			//    刀① start=压缩前清算：该 sid 未抽段（A-12 水位面=压缩前最后原文摄取）fire-and-forget 提炼入册——
+			//    刀① start=压缩前清算：该 sid 未抽段（水位面=压缩前最后原文摄取）fire-and-forget 提炼入册——
 			//    被压细节先落living memory再离窗。刀② end=检查点锚条入册+建边：被压段经此锚 read_episodic 可回流
 			//    （source=auto:<sid> 满足 episodic 通道）。回退：LEGION_COMPACT_BRIDGE_OFF。
 			if (!process.env.LEGION_COMPACT_BRIDGE_OFF && t === "compaction/start") {
@@ -4394,7 +4556,22 @@ module.exports = {
 							);
 						}
 					}
-				} catch {}
+				} catch (eS) {
+					// ⑬ 补（design-approved「同车修」精神扩及同族·** 改进刀① 处置**）：**审计 N1 订正**—— 原文末句为「候maintainer是否即修」⇒ 性质＝**候裁 9 天未决**（非「积压未落」欠账·与本窗  订正一致）
+					//   09-03 压缩桥车审计列 2 条改进——刀① 本处 start 段外层 catch{} 无计数（chase 同步段失败静默）、
+					//   刀② end 段建边内层 catch{}；刀② 已于本车第四笔（2cd9112）修复，刀① 按「同族全点枚举」亲验hard rule一并补，禁留同族残尾。
+					//   复用既有 compactionBridgeErrors（**三源共用一键**·审计 I2 注记：start 段外层 eS／end 段建边内层 eEdge／end 段外层 eB ⇒ 计数只可加总·归因靠 warn 文案前缀）＋零新增计数键。
+					stats.compactionBridgeErrors =
+						(stats.compactionBridgeErrors || 0) + 1;
+					try {
+						ctx.logger?.warn?.(
+							"[living-memory] compaction/start bridge failed (#" +
+								stats.compactionBridgeErrors +
+								"): " +
+								String(eS).slice(0, 60),
+						);
+					} catch {} // ⑬ 豁免报备（审计 I1）：本 catch 仅护上方 warn 调用（调用点已带 ?.）——增计已在其前执行·出口经 render「bridge错」透出，非观测黑洞
+				}
 			}
 			if (
 				!process.env.LEGION_COMPACT_BRIDGE_OFF &&
@@ -4405,12 +4582,18 @@ module.exports = {
 					const cSid2 =
 						session && typeof session.id === "string" ? session.id : null;
 					if (cSid2) {
-						const n = (compactionBySid.get(cSid2) || 0) + 1;
+						const n = nextCompactionN(cSid2); // 09-11：持久计数（原 `(compactionBySid.get(...)||0)+1` 单源 ⇒ 重启归零同名漂移）
 						compactionBySid.set(cSid2, n);
 						stats.compactionSeen = (stats.compactionSeen || 0) + 1;
 						// 刀②：检查点锚条入册——被压段经此锚 read_episodic 回流（step通道·source=auto:<sid> 现成）
 						const cSpace = sessionOrgan(cSid2) || "global";
-						const cTitle = "上下文压缩锚：本会话第 " + n + " 次压缩";
+						// 标题带 **sid 前 8 位**（09-11 同车）：同 space 多窗锚条互不混同·「搜上下文压缩锚」可辨识来源窗
+						const cTitle =
+							"上下文压缩锚：" +
+							String(cSid2).replace(/^session-/, "").slice(0, 8) +
+							" 第 " +
+							n +
+							" 次压缩";
 						const cContent =
 							"compaction/end 捕获（compactionId=" +
 							String(event.data?.compactionId || "?").slice(0, 36) +
@@ -4427,7 +4610,7 @@ module.exports = {
 								"auto:" + cSid2,
 								sha1(cSid2 + n + cTitle),
 							);
-						// 建边：链回该会话近 3 条同源条目（A-13 UPSERT 同法·幂等）
+						// 建边：链回该会话近 3 条同源条目（UPSERT 同法·幂等）
 						try {
 							const nearRows = db
 								.prepare(
@@ -4446,7 +4629,21 @@ module.exports = {
 									nowIso(),
 								);
 							stats.compactionBridged = (stats.compactionBridged || 0) + 1;
-						} catch {}
+						} catch (eEdge) {
+							// ⑬ 补（design-approved「同车修」·压缩质检派生）：原 `catch {}` 空吞＝**建边失败静默**——
+							//   锚条已入册而边缺失时 compactionBridged 与 compactionBridgeErrors **双不增** ⇒ 观测黑洞（⑬「空 catch 一律视为缺陷」同族）。
+							//   修：异常计入既有 compactionBridgeErrors（**零新增计数键** ⇒ render「bridge错」与 stats return 四点接线已在位·无新键接线负担）+ warn 留痕。
+							stats.compactionBridgeErrors =
+								(stats.compactionBridgeErrors || 0) + 1;
+							try {
+								ctx.logger?.warn?.(
+									"[living-memory] compaction anchor edge failed (#" +
+										stats.compactionBridgeErrors +
+										"): " +
+										String(eEdge).slice(0, 60),
+								);
+							} catch {} // ⑬ 豁免报备（审计 I1·同族）：本 catch 仅护上方 warn 调用（调用点已带 ?.）——增计已在其前执行·出口经 render「bridge错」透出
+						}
 					}
 				} catch (eB) {
 					stats.compactionBridgeErrors =
@@ -4464,10 +4661,10 @@ module.exports = {
 			if (t === "turn/end") sweepExpiredAccounts(); // 8-31 修复④：过期扫挂真事件每轮尾（原幻事件整段死码——防 Map 无界+过期账清算+落盘恢复在产）
 		});
 
-		// ── A-01 吸收刀·每轮自动召回（wave·13:07 maintainer融入令；源=graph-memory dsh.ts L472-556 三件套逐块融入）──
+		// ── 吸收项·每轮自动召回（wave·13:07 maintainer融入令；源=graph-memory dsh.ts L472-556 三件套逐块融入）──
 		//    机制：agent/inbox/claimed 捕获真用户令 → system-prompt/assemble（宿主契约=dsh-system-prompt waterfall
 		//    assembly{sections,contexts,variables}）时以其为 query 跑living memory FTS 检索链 → one-pass 变量注入
-		//    （{{var}} 占位+variables 存值——召回文本当数据不当模板源·防提示词注入·gm prompt-data 同法）。
+		//    （{{var}} 占位+variables 存值——召回文本当数据不当模板源·防提示词注入·graph-memory prompt-data 同法）。
 		//    纪律：注入=参考级慎用口径（同 v2.3 ⑤）·高精门 bm25≥0.18 只进强相关·同 query 5min 缓存·
 		//    检索失败静默零阻断·env LEGION_AUTORECALL_OFF 一键关。红线：只挂 contexts 不动 sections（人格/directive层零碰）。
 		const AUTO_RECALL_MAX = 4;
@@ -4563,7 +4760,7 @@ module.exports = {
 						}
 					}
 				} // 2h 无新消息的分账清（防 Map 无界·审计死语句修正版）
-				if (sweptAny) a25Flush(true); // A-25：清账后强制落盘（件三车病灶2：实际清账才 force——每轮 force 与 D15 节流矛盾根治）
+				if (sweptAny) a25Flush(true); // 清账后强制落盘（件三车病灶2：实际清账才 force——每轮 force 与 D15 节流矛盾根治）
 			} catch (e) {
 				stats.sweepErrors = (stats.sweepErrors || 0) + 1;
 				ctx.logger?.warn?.(
@@ -4588,7 +4785,7 @@ module.exports = {
 		try {
 			ctx.on &&
 				ctx.on("system-prompt/assemble", async (assembly, context, next) => {
-					// P2修#25（09-03 audit）：双 next 根治——try 内早退支 return await next() 若 reject 被 eAR catch 吞后落尾部再调 next（cordis next 一次性）；
+					// P2 fix（09-03 audit）：双 next 根治——try 内早退支 return await next() 若 reject 被 eAR catch 吞后落尾部再调 next（cordis next 一次性）；
 					// 修：早退支全走 runNextAR（打戳+不 await→reject 天然传播宿主 waterfall 不碰 catch）·尾部唯一条件调用点。
 					let nextCalledAR = false;
 					const runNextAR = () => {
@@ -4601,7 +4798,7 @@ module.exports = {
 							!assembly ||
 							!Array.isArray(assembly.contexts)
 						)
-							return runNextAR(); // P2修#25
+							return runNextAR(); // P2 fix
 						// 键同源hard rule（审计 D-键族①③·nudge D2 消费侧同型先例）：主键=context.agent.id（与 claimed 捕获键同源）。
 						// sessionOfLastTurn 是插件级单例（多窗并发跨污染面）——仅当 autoLatestPrompt 唯一持有时才作 fallback
 						// （唯一=无错配可能；多窗并存时宁缺毋滥放弃注入）。sessionOrgan 期望 session id：agent.id 主路直用
@@ -4612,22 +4809,22 @@ module.exports = {
 						let key = agentKey;
 						let callerKey = agentKey;
 						if (!key) {
-							if (autoLatestPrompt.size !== 1) return runNextAR(); // P2修#25
+							if (autoLatestPrompt.size !== 1) return runNextAR(); // P2 fix
 							key = autoLatestPrompt.keys().next().value;
 							callerKey = "";
 						}
 						const query = autoLatestPrompt.get(key)?.text;
-						if (!query) return runNextAR(); // P2修#25
+						if (!query) return runNextAR(); // P2 fix
 						// 高精门 v4 定稿注释（v3 漂移修正·审计改进项）：三层=①长度门（<10 字且无意图词拒——短 query
 						// 语义信号不足）②bm25 归一≥0.18 ③token 交叠主门（**无条件**·query×title ≥2 token——治
 						// 「常见词强命中」：bm25 0.86 的「无效查询」单 token 命中被此门挡）。中文 2 字核心词天然 1 bigram
 						// 交叠会被误挡（召回代价·宁缺毋滥口径·观察一周再议降阈）。
 						const intentRe =
-							/[0-9一二三四五六七八九十]{1,4}\s*(月|日|号|点|时|次|条|个|d|h|分)|最近|今天|昨天|上周|上月|之前|之前那|上次|昨天那|刚才|进度|状态|报(告|表)|怎么|如何|什么|哪|谁|是否|还|继续|接(手|续|令|着)|查|找|搜|看|列|盘|总|结|汇|对比|差异|回(顾|顾下|执)|复(盘|跑|核)|待办|进行|在办|完成|毕|验收|呈|批|裁|令|案|刀|车|窗|库|表|面板|通道|插件|模型|参数|配置|路径|版本|行号|文件|目录|备份|快照|回归|演练|审计|nightly patrol|living memory|记忆|检索|注入|提炼|写入|召回|分词|词表|权限|红线|hard rule|纪律|space|模块|工程|施工|发车|重启|挂载|\b(?:\d+\s*(?:d|h|days?|hrs?|hours?|weeks?|months?|times?)|yesterday|today|tomorrow|recently|latest|last\s+(?:week|month|time|night|session)|ago|when)\b|\b(?:status|progress|pending|todo|done|complete[dt]?|finish(?:ed)?|verified?|audit(?:ed)?|review(?:ed)?|recap|summary)\b|\b(?:how|what|where|which|who|why|whose|whom)\b|\b(?:continue|resume|restart|find|search|look(?:up)?|list|show|check|compare|diff|track)\b|\b(?:memory|memories|recall|retriev\w*|inject\w*|extract\w*|index|schema|config\w*|plugin|model|version|backup|snapshot|patrol|nightly|session|window|panel|channel|permission|threshold)\b/i; // 0.2.0 首刀：英文意图分支追加（四段：时间/状态/疑问/动作+域词·全 \b 边界防子串误命中·i flag 治句首大写·中文分支零变）——英文短 query 自动召回高精门不再静默全拒
+							/[0-9一二三四五六七八九十]{1,4}\s*(月|日|号|点|时|次|条|个|d|h|分)|最近|今天|昨天|上周|上月|之前|之前那|上次|昨天那|刚才|进度|状态|报(告|表)|怎么|如何|什么|哪|谁|是否|还|继续|接(手|续|令|着)|查|找|搜|看|列|盘|总|结|汇|对比|差异|回(顾|顾下|执)|复(盘|跑|核)|待办|进行|在办|完成|毕|验收|呈|批|裁|令|案|刀|车|窗|库|表|面板|通道|插件|模型|参数|配置|路径|版本|行号|文件|目录|备份|快照|回归|演练|审计|nightly patrol|living memory|记忆|检索|注入|提炼|写入|召回|分词|词表|权限|红线|hard rule|纪律|space|模块|工程|施工|发车|重启|挂载|\b(?:\d+\s*(?:d|h|days?|hrs?|hours?|weeks?|months?|times?)|yesterday|today|tomorrow|recently|latest|last\s+(?:week|month|time|night|session)|ago|when)\b|\b(?:status|progress|pending|todo|done|complete[dt]?|finish(?:ed)?|verified?|audit(?:ed)?|review(?:ed)?|recap|summary)\b|\b(?:how|what|where|which|who|why|whose|whom)\b|\b(?:continue|resume|restart|find|search|look(?:up)?|list|show|check|compare|diff|track)\b|\b(?:memory|memories|recall|retriev\w*|inject\w*|extract\w*|index|schema|config\w*|plugin|model|version|backup|snapshot|patrol|nightly|session|window|panel|channel|permission|threshold)\b/i; // 0.2.0 首发：英文意图分支追加（四段：时间/状态/疑问/动作+域词·全 \b 边界防子串误命中·i flag 治句首大写·中文分支零变）——英文短 query 自动召回高精门不再静默全拒
 						const hasIntent = intentRe.test(query);
 						if (query.length < 10 && !hasIntent) {
 							autoRecallCache.set(key, { query, at: Date.now(), text: "" });
-							return runNextAR(); // P2修#25
+							return runNextAR(); // P2 fix
 						}
 						const hit = autoRecallCache.get(key);
 						if (
@@ -4636,7 +4833,7 @@ module.exports = {
 							Date.now() - hit.at < 5 * 60_000
 						) {
 							if (hit.text) legionContributeAutoRecall(assembly, hit.text);
-							return runNextAR(); // P2修#25
+							return runNextAR(); // P2 fix
 						}
 						const callerSpace = callerKey ? sessionOrgan(callerKey) : null;
 						const tokens = qTokens(query); // item：实词优选（jieba 滤虚词+西文专名最前〔option遗产守〕+bigram 兜底）——原「option西文排序+slice(0,8)」与更早纯 slice 两版统一收编本函数
@@ -4660,7 +4857,7 @@ module.exports = {
 								.filter((r) => r.score >= AUTO_RECALL_MIN_SCORE)
 								.filter((r) => {
 									// token 交叠门（高精门③·v4 定稿）：无条件主门——query 与命中条 title ≥2 token
-									// 交叠才算可信相关（gm「精确标识必须匹配」哲学）。治「常见词强命中」：bm25 0.86 的
+									// 交叠才算可信相关（graph-memory「精确标识必须匹配」哲学）。治「常见词强命中」：bm25 0.86 的
 									// 「无效查询」单 token 命中（如「过程查询法」）被此门挡住——自动注入宁缺毋滥。
 									const tt = new Set(tokenize(String(r.title)));
 									return tokens.filter((tk) => tt.has(tk)).length >= 2;
@@ -4797,7 +4994,7 @@ module.exports = {
 							} catch {}
 						}
 						let text = picked.length
-							? "## living memory自动召回（⚠ 参考级·非directive·与最新directive相关记忆，引用前以当轮实况与directivesource of record核对）\n" +
+							? "## living memory自动召回（⚠ 参考级·非directive·与最新directive相关记忆，引用前以当轮实况与directive source of record核对）\n" +
 								picked
 									.map(
 										(r) =>
@@ -4831,7 +5028,7 @@ module.exports = {
 									(m ? m[1].slice(0, 120) : "见该条正文——引用前先读全文");
 							}
 						} catch {}
-						// ── step：上窗衔接段（wb 神经记忆「上窗口衔接」吸收·08:57 maintainer）——跨窗连续性叙事：
+						// ── step：上窗衔接段（神经记忆「上窗口衔接」吸收·08:57 maintainer）——跨窗连续性叙事：
 						//    本空间最新一条收官账接续行（不受 48h 鲜度闸·哪怕三天前的窗也衔接）·帽一行·已在召回席则不重挂。
 						try {
 							const stitchSpace = callerKey ? sessionOrgan(callerKey) : null; // 8-31 移植族修复②：原引用 injectCallerSpace 系 L827 注入段回调局部变量·本 assemble 钩子不可达（幻引用致本段 100% 死+每轮 warn）——本作用域自算·口径同源（sessionOrgan 第一源 identity.cwd→organFromPath·L1459 唯一兜底路 callerKey='' 时 null 防错源）
@@ -4839,7 +5036,7 @@ module.exports = {
 								const pickedIds = new Set(picked.map((r) => r.id));
 								const cut2h = new Date(
 									Date.now() - 2 * 3600 * 1000 + 8 * 3600 * 1000,
-								); // 审计 I3：2h 闸——排除本窗自产（「上窗」语义保真·wb 原设计=上一窗最后会话）
+								); // 审计 I3：2h 闸——排除本窗自产（「上窗」语义保真·原设计=上一窗最后会话）
 								const cutIso =
 									cut2h.getUTCFullYear() +
 									"-" +
@@ -4872,7 +5069,7 @@ module.exports = {
 									String((e2 && e2.message) || e2).slice(0, 60),
 							);
 						} // 审计 I2：⑬ 回溯——空 catch 当日纪律当日不豁免
-						// ── MP吸收#21 blindspot 盲区提醒（accio nerve-wake 同款·design-approved
+						// ── blindspot 盲区提醒（nerve-wake 同款·design-approved「开始吸收」）：召回有命中≠覆盖全——一行提示主动补维度（邻近域/反例/时序边界）·「注入变指针」精神·帽一行不膨胀。
 						try {
 							if (text)
 								text +=
@@ -4881,8 +5078,8 @@ module.exports = {
 						autoRecallCache.set(key, { query, at: Date.now(), text });
 						if (text) legionContributeAutoRecall(assembly, text);
 					} catch (eAR) {
-						if (nextCalledAR) throw eAR; // P2修#25：next 已调则此 reject 系下游失败——传播不吞（防尾部双调）
-						stats.autorecallErrors = (stats.autorecallErrors || 0) + 1; // P0修（09-03 audit#14）：召回整链异常计数透出（原静默假绿）
+						if (nextCalledAR) throw eAR; // P2 fix：next 已调则此 reject 系下游失败——传播不吞（防尾部双调）
+						stats.autorecallErrors = (stats.autorecallErrors || 0) + 1; // P0修（09-03 audit）：召回整链异常计数透出（原静默假绿）
 						if (Date.now() - (stats._arWarnAt || 0) > 60000) {
 							stats._arWarnAt = Date.now();
 							ctx.logger?.warn?.(
@@ -4893,7 +5090,7 @@ module.exports = {
 							);
 						}
 					}
-					if (!nextCalledAR) return await next(); // P2修#25：唯一调用点
+					if (!nextCalledAR) return await next(); // P2 fix：唯一调用点
 				});
 		} catch {}
 
@@ -4922,8 +5119,8 @@ module.exports = {
 			let merged = 0;
 			let mergedIds = [];
 			let conflictsPending = 0;
-			let patrolMergedOut = 0; // 8-31 锈面修⑤：本巡 A-16 执行器真合并条数（light sentry合法流转豁免面·active 计数合法流出）
-			const mergeIds = new Set(); // step伴修 D1（caught in drill）：S1 step「上提」落错块——声明进了 conflicts 内层 try·L1651 外层引用 ReferenceError 夜夜被外层 catch 吞（A-10 活·①精确填账+审计清单死）。真上提至本层三面同见。
+			let patrolMergedOut = 0; // 8-31 锈面修⑤：本巡 执行器真合并条数（light sentry合法流转豁免面·active 计数合法流出）
+			const mergeIds = new Set(); // step伴修 D1（caught in drill）：S1 step「上提」落错块——声明进了 conflicts 内层 try·L1651 外层引用 ReferenceError 夜夜被外层 catch 吞（活·①精确填账+审计清单死）。真上提至本层三面同见。
 			try {
 				const rows = db
 					.prepare(
@@ -4941,7 +5138,7 @@ module.exports = {
 					try {
 						db.exec("ALTER TABLE memories ADD COLUMN superseded_by INTEGER");
 					} catch {}
-					// ── wave#1 AUDN：预裁决三列（幂等 ALTER·照 closed_at 先例）
+					// ── wave AUDN：预裁决三列（幂等 ALTER·照 closed_at 先例）
 					try {
 						db.exec("ALTER TABLE conflicts ADD COLUMN pre_verdict TEXT");
 					} catch {}
@@ -5054,7 +5251,7 @@ module.exports = {
 						if (seenC.has(key)) {
 							const old = seenC.get(key);
 							// A11 幂等（2026-08-26 修法包·wave 审计根因）：exact 段补 dup 查询——防每轮nightly patrol对同对重复条目重复立 pending（50/53 双立实证）
-							// E3 快治（design-approved(2580,2773) 旧序] 穿透新序查重落空=今夜重立根因）②AND status='pending'——已裁决（approved/resolved）同对不再重立（流水型警报根治）
+							// E3 快治（design-approved·brain亲验定性）：①无序对查重（两值同交——病序老行 [如 52 号 (2580,2773) 旧序] 穿透新序查重落空=今夜重立根因）②AND status='pending'——已裁决（approved/resolved）同对不再重立（流水型警报根治）
 							const dupX = db
 								.prepare(
 									"SELECT COUNT(*) c FROM conflicts WHERE new_id IN (?, ?) AND old_id IN (?, ?) AND new_id != old_id AND status = 'pending'",
@@ -5123,17 +5320,17 @@ module.exports = {
 							}
 						}
 					}
-					// ── A-10 语义去重第三判据(design note)：向量余弦≥0.92
+					// ── 语义去重第三判据(design note)：向量余弦≥0.92
 					//    且同 type+同 space 才立 pending——「词面不重叠语义同物」（jaccard 漏网面·如 conda-env-create
 					//    vs conda-create-environment）。仍走人工裁决（8-23 弃 semantic 因误报·type+space+0.92 三重收窄后
 					//    复投）。挂 RRF 已有向量·零新嵌入成本（缺向量对跳过）；护栏：active 全量 O(n²) 桶帽 3000。──
 					// S1 修（step）原上提点=conflicts 内层 try 域——stepcaught in drill L1651 外层引用 ReferenceError；
-					// 声明已真上提至外层 conflictsPending 旁（本行删·A-10/①精确/审计清单三面同见）。
+					// 声明已真上提至外层 conflictsPending 旁（本行删·/①精确/审计清单三面同见）。
 					try {
 						if (!process.env.LEGION_SEMANTIC_DEDUP_OFF) {
 							const a10Excl = [...mergeIds]; // S1 同修：空集→无 NOT IN 子句（原 'NULL' 兜底=NOT IN (NULL) 恒假死路·声明上提后仍死·两处合医才活）
 							try {
-								// 件三车病灶6（09-09·三轮审计 §4.5）：mergeIds 填点（①精确/②高相似段）在 A-10 之后=恒空集·排除意图死——SQL 直查 pending 对补排除集（exact/family 已立案的 id 不进 A-10·防同对双立案·语义对齐零段序改动）
+								// 件三车病灶6（09-09·三轮审计 §4.5）：mergeIds 填点（①精确/②高相似段）在 之后=恒空集·排除意图死——SQL 直查 pending 对补排除集（exact/family 已立案的 id 不进 防同对双立案·语义对齐零段序改动）
 								for (const pc of db
 									.prepare(
 										"SELECT new_id, old_id FROM conflicts WHERE status = 'pending'",
@@ -5147,10 +5344,10 @@ module.exports = {
                 WHERE v.model_version = ? AND m.status = 'active'${a10Excl.length ? ` AND m.id NOT IN (${a10Excl.map(() => "?").join(",")})` : ""}`)
 								.all(VEC_MODEL, ...a10Excl);
 							if (vecRows.length > 1 && vecRows.length <= 5000) {
-								// wave 16:55 修：3000 帽在 3237 向量正库恒跳过（A-10 首夜零发现同被帽掩盖）——升 5000 对齐 cooccur HI_SIM_CAP
+								// wave 16:55 修：3000 帽在 3237 向量正库恒跳过（首夜零发现同被帽掩盖）——升 5000 对齐 cooccur HI_SIM_CAP
 								const metaOf = new Map(rows.map((r) => [r.id, r]));
 								let semanticFound = 0;
-								// P1 修（design-approved
+								// P1 修（design-approved·次批治本件1）：解码提外层一次——
 								// 原内层每对重解码=790 万次 TypedArray 分配/轮→GC 停顿风暴。纯性能·零逻辑变更。
 								const vecs = vecRows.map((r) => blobToF32(r.embedding));
 								outer: for (let i = 0; i < vecRows.length; i++) {
@@ -5166,7 +5363,7 @@ module.exports = {
 											ma.type !== mb.type ||
 											ma.space !== mb.space
 										)
-											continue; // type-guard：同 type+同 space（gm type-guard 意·误报收窄第一重）
+											continue; // type-guard：同 type+同 space（graph-memory type-guard 意·误报收窄第一重）
 										if (String(ma.title) === String(mb.title)) continue; // exact 已记
 										if (sysAutoOf(ma.title) && sysAutoOf(mb.title)) continue; // 七小件⑤：双侧系统自动条互撞豁免
 										const nid2 = Math.max(ma.id, mb.id),
@@ -5199,14 +5396,14 @@ module.exports = {
 					} catch (e) {
 						stats.a10SkipErrors = (stats.a10SkipErrors || 0) + 1;
 						ctx.logger?.warn?.(
-							"[living-memory] A-10 semantic scan failed (#" +
+							"[living-memory] semantic scan failed (#" +
 								stats.a10SkipErrors +
 								"): " +
 								String((e && e.message) || e).slice(0, 80),
 						);
 					} // ⑬ 纪律回溯修（8-38 审计）：S1 病灶本体的空 catch——TDZ 曾被它静默吞一日
 					// ── 七小件②：死向量清理（09-08 maintainer·审计 §四：superseded/done 条向量残留——
-					//    落码时实测 vec 5056 vs active 4779=277 条·每夜冗余参与 A-10 桶与余弦扫描）──
+					//    落码时实测 vec 5056 vs active 4779=277 条·每夜冗余参与 桶与余弦扫描）──
 					try {
 						const dv = db
 							.prepare(
@@ -5232,7 +5429,7 @@ module.exports = {
 					} catch (e2v) {
 						stats.deadVecSkipErrors = (stats.deadVecSkipErrors || 0) + 1;
 					}
-					// ── A-16 merge 执行器（wave·gm mergeNodes 边迁移+自环清理意融入）：approved 裁决自动执行——
+					// ── merge 执行器（wave·graph-memory mergeNodes 边迁移+自环清理意融入）：approved 裁决自动执行——
 					//    人工主权不动（裁决仍maintainer），执行自动化（原人工 UPDATE）：①被合条 merged+superseded_by
 					//    ②边迁移（被合条端点活边改挂保留方·显式因果边不断链）③自环清理（迁移后 src=dst 软失效）。
 					//    幂等（已 merged 跳过）·executed 态终收（approved→executed 审计链）。
@@ -5242,8 +5439,8 @@ module.exports = {
 								"SELECT conflict_id, new_id, old_id FROM conflicts WHERE status = 'approved' AND decided_at IS NOT NULL",
 							)
 							.all();
-						// ── 刀A both-valid 第四态（design-approved
-						//    不合并（条目双活·as_of 各自正确·检索天然支持）·边=检索面关联可见（A-18 conflicts_with 型）；E3 查重豁免天然兼容（非 pending 不重立）；executed 复用=执行器已处理终态
+						// ── 刀A both-valid 第四态（design-approved·对标pending ruling①）：不可约冲突——保留双方·建 conflicts_with 边+终收 ──
+						//    不合并（条目双活·as_of 各自正确·检索天然支持）·边=检索面关联可见（conflicts_with 型）；E3 查重豁免天然兼容（非 pending 不重立）；executed 复用=执行器已处理终态
 						try {
 							const bothValidRows = db
 								.prepare(
@@ -5349,7 +5546,7 @@ module.exports = {
 							}
 							db.prepare(
 								"UPDATE memories SET status = 'merged', superseded_by = ?, closed_at = ?, valid_to = COALESCE(valid_to, ?) WHERE id = ?",
-							).run(nid, nowIso(), nowIso(), ap.old_id); // MP吸收#10+#9：闭环时刻随墓碑记·valid_to 事件轴缺省同刻（显式值优先·幂等不重刷）·8-31 悬死修②：保留方=追链后终极 nid
+							).run(nid, nowIso(), nowIso(), ap.old_id); // ：闭环时刻随墓碑记·valid_to 事件轴缺省同刻（显式值优先·幂等不重刷）·8-31 悬死修②：保留方=追链后终极 nid
 							db.prepare(
 								"UPDATE conflicts SET status = 'executed', decided_by = COALESCE(decided_by, 'patrol-executor') WHERE conflict_id = ?",
 							).run(ap.conflict_id);
@@ -5362,7 +5559,7 @@ module.exports = {
 					} catch (e3) {
 						try {
 							ctx.logger?.warn?.(
-								"[living-memory] A-16 executor fail: " +
+								"[living-memory] executor fail: " +
 									String(e3).slice(0, 60),
 							);
 						} catch {}
@@ -5372,7 +5569,7 @@ module.exports = {
 							"SELECT COUNT(*) c FROM conflicts WHERE status = 'pending'",
 						)
 						.get().c;
-					// ── wave#1 AUDN 预裁段（pending 且未裁·预算帽 40/巡·LEGION_PRECLASSIFY_OFF 回退）：
+					// ── wave AUDN 预裁段（pending 且未裁·预算帽 40/巡·LEGION_PRECLASSIFY_OFF 回退）：
 					//    只写 pre_* 建议列不动 status——maintainer终批才执行（A16 执行器主权不动）。
 					if (!process.env.LEGION_PRECLASSIFY_OFF) {
 						(async () => {
@@ -5418,14 +5615,14 @@ module.exports = {
 							}
 						})();
 					}
-					// ── A-19 validatedCount（wave·gm validated_count 意融入）：新条撞既有主题族→锚条 +1——
+					// ── validatedCount（wave·graph-memory validated_count 意融入）：新条撞既有主题族→锚条 +1——
 					//    「重复验证的知识自然浮权」。审计 D13 修正（16:04）：原全量对扫=同对每晚重加终身无界（30 天 vc
-					//    失义）；gm 原语义=新事件驱动（再抽取命中才强化）。修：i 侧只取**上次nightly patrol后新条**（patrol_last.at
+					//    失义）；graph-memory 原语义=新事件驱动（再抽取命中才强化）。修：i 侧只取**上次nightly patrol后新条**（patrol_last.at
 					//    水位·本段执行时该键仍是昨晚值——末段才刷新·时序天然正确）·j 侧全量同 type+space 桶——同对终身
 					//    只强化一次。首夜（无水位）零强化（保守正确·回填 vc=1 已另做）。PPR 消费不变。
 					try {
 						if (!process.env.LEGION_VALIDATED_OFF) {
-							// A-3（step）：ALTER+回填已挪 ensureFts 启动即建（原在此=重启后→首nightly patrol前消费面缺列；02:16 巡已自愈列·结构性归位）
+							// （step）：ALTER+回填已挪 ensureFts 启动即建（原在此=重启后→首nightly patrol前消费面缺列；02:16 巡已自愈列·结构性归位）
 							const lastAt = (() => {
 								try {
 									return String(
@@ -5448,7 +5645,7 @@ module.exports = {
 										"UPDATE memories SET validated_count = validated_count + 1 WHERE id = ?",
 									);
 									let vcUp = 0;
-									const vcCounted = new Set(); // P0修（09-03 audit#5）：同对去重——recent 内 A/B 互为 nr/old 防 anchor 双计
+									const vcCounted = new Set(); // P0修（09-03 audit）：同对去重——recent 内 A/B 互为 nr/old 防 anchor 双计
 									const byKey = new Map();
 									for (const r of rows) {
 										const k = r.type + "\u0000" + r.space;
@@ -5477,19 +5674,19 @@ module.exports = {
 							}
 						}
 					} catch (eVC) {
-						stats.validatedErrors = (stats.validatedErrors || 0) + 1; // P2修#31a（09-03 audit）：A-19 段异常透出（原静默=失败残留昨夜值假绿·对照 A-10 有 a10SkipErrors）
+						stats.validatedErrors = (stats.validatedErrors || 0) + 1; // P2 fix（09-03 audit）：段异常透出（原静默=失败残留昨夜值假绿·对照 有 a10SkipErrors）
 						ctx.logger?.warn?.(
-							"[living-memory] A-19 validatedCount failed (#" +
+							"[living-memory] validatedCount failed (#" +
 								stats.validatedErrors +
 								"): " +
 								String(eVC).slice(0, 60),
 						);
 					}
-					// ── A-22 语义近邻边（wave·16:47 approved）：nightly patrol对 vec 近邻带建 'semantic' 边
+					// ── 语义近邻边（wave·16:47 approved）：nightly patrol对 vec 近邻带建 'semantic' 边
 					//    （weight 0.3 低档）——治「词面不重叠语义同物」的图死角（jaccard 建不了的边）。
-					//    与 A-10 分职：A-10 是「疑似重复」pending ruling；A-22 是「相关近邻」直接建边。
+					//    与 分职：是「疑似重复」pending ruling；是「相关近邻」直接建边。
 					//    阈值实测校准（16:51 演练）：本库 embedding 分散度高——样本 max cos=0.8993·0.90 带天然空。
-					//    首周带定 0.85-0.92（0.85 下含强相关·0.92 上归 A-10）·预算帽 30 边/轮·观察误建率再收。
+					//    首周带定 0.85-0.92（0.85 下含强相关·0.92 上归 ）·预算帽 30 边/轮·观察误建率再收。
 					try {
 						if (!process.env.LEGION_SEMANTIC_EDGE_OFF) {
 							const vecRows2 = db
@@ -5502,7 +5699,7 @@ module.exports = {
 								let semEdges = 0;
 								const insSE =
 									db.prepare(`INSERT INTO memories_edges (src, dst, edge_type, weight, valid_at, source_group, last_seen, instruction)
-                  VALUES (?, ?, 'semantic', 0.3, ?, 'patrol:semantic', ?, 'A-22 语义近邻')
+                  VALUES (?, ?, 'semantic', 0.3, ?, 'patrol:semantic', ?, '语义近邻')
                   ON CONFLICT(src, dst, edge_type) DO UPDATE SET last_seen = excluded.last_seen`);
 								// P2 修（同 P1）：解码提外层一次
 								const vecs2 = vecRows2.map((r) => blobToF32(r.embedding));
@@ -5511,7 +5708,7 @@ module.exports = {
 									for (let j = i + 1; j < vecRows2.length; j++) {
 										const c2 = cosine(a2, vecs2[j]);
 										if (c2 < 0.85) continue;
-										if (c2 >= 0.92) continue; // ≥0.92 归 A-10 去重管（疑似重复不建边）
+										if (c2 >= 0.92) continue; // ≥0.92 归 去重管（疑似重复不建边）
 										const ma2 = meta2.get(vecRows2[i].id),
 											mb2 = meta2.get(vecRows2[j].id);
 										if (!ma2 || !mb2 || ma2.space !== mb2.space) continue; // 同 space（放宽 type：近邻跨型合理）
@@ -5534,9 +5731,9 @@ module.exports = {
 							}
 						}
 					} catch (eSE) {
-						stats.semanticEdgeErrors = (stats.semanticEdgeErrors || 0) + 1; // P2修#31b（09-03 audit）：A-22 段异常透出（同 #31a 族）
+						stats.semanticEdgeErrors = (stats.semanticEdgeErrors || 0) + 1; // P2 fix（09-03 audit）：段异常透出（同 族）
 						ctx.logger?.warn?.(
-							"[living-memory] A-22 semantic-edge failed (#" +
+							"[living-memory] semantic-edge failed (#" +
 								stats.semanticEdgeErrors +
 								"): " +
 								String(eSE).slice(0, 60),
@@ -5551,7 +5748,7 @@ module.exports = {
 				//    【3a 改道注】merged 动作延至maintainer approved 时执行（首周纪律：全量人工pending ruling勿自动合并——release note§3）；
 				//    高相似段同改道。历史已 merged 条不动（幂等迁移）。
 				const seen = new Set();
-				// mergeIds 声明已上提至 A-10 段前（S1 修·step）——此处仅填账
+				// mergeIds 声明已上提至 段前（S1 修·step）——此处仅填账
 				for (const r of rows) {
 					const key = r.type + "\u0000" + r.title;
 					if (seen.has(key)) mergeIds.add(r.id);
@@ -5582,7 +5779,7 @@ module.exports = {
 				if (mergeIds.size > 0) {
 					// 【3a 改道·首周纪律】自动 merged 挂起——对已入 conflicts pending 待maintainer；
 					// approved 裁决执行面（人工触发）：UPDATE status='merged'+superseded_by=new_id。
-					// 8-31 锈面修（审计片6②）：原此处无条件 merged=0 把 A-16 执行器真执行计数（上段 merged += executed）一并抹掉——
+					// 8-31 锈面修（审计片6②）：原此处无条件 merged=0 把 执行器真执行计数（上段 merged += executed）一并抹掉——
 					//    3a 改道后自动合并本就不向 merged 记账，归零纯属破坏性；改不动前值（counter=执行器真账·发现数由 conflictsPending/mergedIds 承担）。
 					mergedIds = [...mergeIds].sort((a, b) => a - b); // 发现清单保留入 stats（审计链）
 				}
@@ -5594,11 +5791,11 @@ module.exports = {
 			// ③handover note警报：高压会话检测（>70% 建议换窗）
 			const aged = [];
 			try {
-				const sessions = projcacheRows(); // 庚刀修③（2026-09-08）：v5 双源（旧单文件 09-05 停更=压力哨 09-05 后恒空「无高压」静默假绿）
+				const sessions = projcacheRows(); // 庚批修③（2026-09-08）：v5 双源（旧单文件 09-05 停更=压力哨 09-05 后恒空「无高压」静默假绿）
 				for (const [sid, ent] of sessions.entries()) {
 					const cp = ent.rows?.contextPressure?.val;
 					if (!cp || !cp.contextWindow) continue;
-					// E stale 过滤（09-08 brainreceipt建议·🟠采纳）：mtime>48h 死档不计入高压告警（09-05 seed 残留「脑升级77%」型）——历史高压单列
+					// E stale 过滤（09-08 brain receipt建议·🟠采纳）：mtime>48h 死档不计入高压告警（09-05 seed 残留「脑升级77%」型）——历史高压单列
 					const stale = ent.mtimeMs && Date.now() - ent.mtimeMs > 48 * 3600e3;
 					if (stale) continue; // 余件item一（09-09·三轮审计 §4.4-6 亲验实锤）：原只打 stale 标不过滤——死档仍入 aged 计数·补 continue 落实注释承诺
 					// B 假零兜底（09-08 brain报障）：pressure=0||<surface（失败请求打空）→ surfaceTokens 下限——「变绿」比假绿更危险
@@ -5618,7 +5815,7 @@ module.exports = {
 						}); // 老分母（262144 型）标注·与现役 1M 不可比
 				}
 			} catch (ePR) {
-				stats.pressureReadErrors = (stats.pressureReadErrors || 0) + 1; // P2修#31c（09-03 audit）：压力缓存读取失败透出（原静默=aged 空集「无高压」假绿·写库侧已有 pressureAlertErrors 此为读侧对照）
+				stats.pressureReadErrors = (stats.pressureReadErrors || 0) + 1; // P2 fix（09-03 audit）：压力缓存读取失败透出（原静默=aged 空集「无高压」假绿·写库侧已有 pressureAlertErrors 此为读侧对照）
 				ctx.logger?.warn?.(
 					"[living-memory] session_projcache 读取失败(#" +
 						stats.pressureReadErrors +
@@ -5634,12 +5831,12 @@ module.exports = {
 							.map((a) => a.sid.slice(0, 13) + "=" + a.pct + "%")
 							.join("；")
 							.slice(0, 400) + " — consider opening a fresh window.";
-					// L5 根治（design-approvedent），不新建（根治每夜同题 pending 重立·E3 幂等只挡同对挡不住新 id 新对）
+					// L5 根治（design-approved·脑 08:02 漏点清单）：警报=状态流非事件史——今日同 title 已存在则 UPDATE 旧条（刷计数/content），不新建（根治每夜同题 pending 重立·E3 幂等只挡同对挡不住新 id 新对）
 					const prev = db
 						.prepare(
 							"SELECT id FROM memories WHERE title LIKE 'handover note警报：%' AND source LIKE 'patrol:%' ORDER BY id DESC LIMIT 1",
 						)
-						.get(); // P0修（09-03 audit#11）：跨日去重——source 掺 dayKey 日变致每夜重立（正库 13 行同 checksum 实锤）
+						.get(); // P0修（09-03 audit）：跨日去重——source 掺 dayKey 日变致每夜重立（正库 13 行同 checksum 实锤）
 					if (prev) {
 						db.prepare(
 							"UPDATE memories SET ts = ?, title = ?, content = ?, checksum = ? WHERE id = ?",
@@ -5658,7 +5855,7 @@ module.exports = {
 						);
 					}
 				} catch (ePA) {
-					stats.pressureAlertErrors = (stats.pressureAlertErrors || 0) + 1; // P0修（09-03 audit#15）：换窗警报写失败漏警防线（⑬ 出口）
+					stats.pressureAlertErrors = (stats.pressureAlertErrors || 0) + 1; // P0修（09-03 audit）：换窗警报写失败漏警防线（⑬ 出口）
 					ctx.logger?.warn?.(
 						"[living-memory] handover note警报写库失败(#" +
 							stats.pressureAlertErrors +
@@ -5681,7 +5878,7 @@ module.exports = {
 					if (!isNaN(d.getTime()) && d.getTime() < cutoff) {
 						db.prepare(
 							"UPDATE memories SET status = 'aged', closed_at = ?, valid_to = COALESCE(valid_to, ?) WHERE id = ?",
-						).run(nowIso(), nowIso(), t.id); // MP吸收#10+#9：衰减时刻随墓碑记·valid_to 事件轴缺省同刻（显式值优先·幂等不重刷）
+						).run(nowIso(), nowIso(), t.id); // ：衰减时刻随墓碑记·valid_to 事件轴缺省同刻（显式值优先·幂等不重刷）
 						agedTodos += 1;
 					}
 				}
@@ -5693,7 +5890,7 @@ module.exports = {
 
 						let soulDrift = ""; // soul-integrity sentinel is site-specific and removed from the public build;
 			// the variable stays because the patrol-completion log below references it.
-// ── step：图谱共现组 ── 阶段二首步：增量化改造（design-approved
+// ── step：图谱共现组 ── 阶段二首步：增量化改造（design-approved阶段二·M4 硬依赖）──
 			//    原全表 DELETE 重灌会冲掉时态边 invalid_at 语义（阶段二第二步）——改差量：
 			//    ①组级脏标：昨夜水线（organ_meta cooccur_watermark）之后有新增条的 source 组才重算；
 			//    ②死边清理：只删指向非 active 条目的边（含该组旧边）；
@@ -5885,17 +6082,17 @@ module.exports = {
 						`[living-memory] edges mirror failed: ${String(error).slice(0, 80)}`,
 					);
 				}
-				// ── A-04 社区检测（wave·gm Label Propagation 意融入）：活边图上标签传播 → memory_communities 表
-				//    （id→community 映射+社区代表）。供水位泛化路（A-02）与未来可视化。幂等：全量重算（nightly patrol窗口·量小无压力）。
+				// ── 社区检测（wave·graph-memory Label Propagation 意融入）：活边图上标签传播 → memory_communities 表
+				//    （id→community 映射+社区代表）。供水位泛化路与未来可视化。幂等：全量重算（nightly patrol窗口·量小无压力）。
 				try {
 					db.exec(
 						`CREATE TABLE IF NOT EXISTS memory_communities (mem_id INTEGER PRIMARY KEY, community INTEGER NOT NULL, is_rep INTEGER NOT NULL DEFAULT 0)`,
 					);
 					const edges = db
 						.prepare(`SELECT src, dst FROM memories_edges WHERE invalid_at IS NULL
-            AND src IN (SELECT id FROM memories WHERE status='active')
-            AND dst IN (SELECT id FROM memories WHERE status='active')`)
-						.all();
+            AND src IN (SELECT id FROM memories WHERE status='active' AND (valid_to IS NULL OR valid_to > ?))
+            AND dst IN (SELECT id FROM memories WHERE status='active' AND (valid_to IS NULL OR valid_to > ?))`)
+						.all(nowIso(), nowIso()); // 审计③修（design-approved「修」）：社区检测活边图同口径（原只滤 status ⇒ 沉底条被重新纳为活节点·下轮nightly patrol复现）——与 PPR 段同一修法
 					const adj = new Map();
 					const nodes = new Set();
 					for (const e of edges) {
@@ -5929,7 +6126,7 @@ module.exports = {
 						}
 						if (changed === 0) break;
 					}
-					// 社区代表=每社区最高 id（最新条目·gm 无社区代表概念·我方以最新为锚）
+					// 社区代表=每社区最高 id（最新条目·graph-memory 无社区代表概念·我方以最新为锚）
 					const repBy = new Map();
 					db.exec("DELETE FROM memory_communities");
 					const insC = db.prepare(
@@ -5942,7 +6139,7 @@ module.exports = {
 					for (const n of nodes)
 						insC.run(n, label.get(n), repBy.get(label.get(n)) === n ? 1 : 0);
 					stats.communitiesBuilt = new Set(label.values()).size;
-					// ── 件5 面1 Saga 社区叙事摘要（design-approved
+					// ── 件5 面1 Saga 社区叙事摘要（design-approved「开」·B级5·Graphiti Saga 增量叙事意·规则版零 LLM）──
 					//    ≥5 条成员的社区生成摘要（rep 标题｜N 条｜top3 成员片段 ≤120 字）→ organ_meta community_summaries（JSON·全量覆写幂等）
 					try {
 						const groups = db
@@ -5984,7 +6181,7 @@ module.exports = {
 					}
 				} catch (error) {
 					ctx.logger?.warn?.(
-						`[living-memory] A-04 communities failed: ${String(error).slice(0, 80)}`,
+						`[living-memory] communities failed: ${String(error).slice(0, 80)}`,
 					);
 				}
 				try {
@@ -5997,7 +6194,7 @@ module.exports = {
 					db.exec(`CREATE TABLE IF NOT EXISTS memories_entities (
             memory_id INTEGER NOT NULL, entity_id INTEGER NOT NULL,
             PRIMARY KEY(memory_id, entity_id))`);
-					// ── wave#13 APEX-MEM 实体消解（design-approved
+					// ── wave APEX-MEM 实体消解（design-approved四车）：幂等 ALTER 两列——
 					//    aliases=变体名清单（JSON）/canonical_id=指向规范体（变体不删·历史保留）
 					try {
 						db.exec("ALTER TABLE entities ADD COLUMN aliases TEXT");
@@ -6071,7 +6268,7 @@ module.exports = {
 								String(eEnt).slice(0, 80),
 						);
 					}
-					// ── wave#13 实体消解段（变体合并·canonical 收敛·LEGION_RESOLVE_OFF 回退）──
+					// ── wave 实体消解段（变体合并·canonical 收敛·LEGION_RESOLVE_OFF 回退）──
 					//    域：kind 非空实体（接入检索面·防 TfIdf 噪音乱并）·判定=归一化等值/编辑距离≤2(≥4字)/字集 jaccard≥0.75(≥3字)
 					//    方向：mention_count 高者为规范体；合并=canonical 指向+aliases 累积+计数并入+链接迁移（变体行保留）
 					if (!process.env.LEGION_RESOLVE_OFF) {
@@ -6185,10 +6382,10 @@ module.exports = {
 				);
 			}
 
-			// ── #8 实体-三元组 KG 增量转写（step·design-approved
+			// ── 实体-三元组 KG 增量转写（step·design-approved「升维大刀这个窗做」）──
 			//    显式系新边→两端条目主实体投影→memory_triples（实体知识层·与条目图并存）。
-			//    质量三闸：主实体非纯数字（TfIdf 噪音词「16/12」不进知识层）+非自环+表达式唯一索引幂等（COALESCE 防表级 UNIQUE NULL 坑——accio「uuid 必写」同族）。
-			//    水线 kg_edge_watermark（bootstrap 存量先行·nightly patrol只增新边）。cooccur/semantic 统计边不转（防垃圾·accio 置信度过滤精神）。
+			//    质量三闸：主实体非纯数字（TfIdf 噪音词「16/12」不进知识层）+非自环+表达式唯一索引幂等（COALESCE 防表级 UNIQUE NULL 坑——「uuid 必写」同族）。
+			//    水线 kg_edge_watermark（bootstrap 存量先行·nightly patrol只增新边）。cooccur/semantic 统计边不转（防垃圾·置信度过滤精神）。
 			try {
 				db.exec(
 					`CREATE TABLE IF NOT EXISTS memory_triples (triple_id INTEGER PRIMARY KEY AUTOINCREMENT, subject_id INTEGER NOT NULL, predicate TEXT NOT NULL, object_id INTEGER, object_text TEXT, valid_from TEXT, valid_to TEXT, ingested_at TEXT NOT NULL, invalidated_at TEXT, confidence REAL DEFAULT 1.0, source_memory INTEGER, source_edge INTEGER, extracted_by TEXT NOT NULL)`,
@@ -6272,9 +6469,9 @@ module.exports = {
 				);
 			}
 
-			// ── #12 Auto-Dreamer 抽象合成（stepstep·2026-08-30 goal 五连刀·论文 2605.20616 抽象合成意）──
-			//    **实勘改造**：题 token 聚簇在 DSH 形态不可行（碎片池 7 条/题面稀疏 0 簇·写入=浓缩field report式无 wb 碎片层）
-			//    ——改用 **A-22 语义边连通分量**（现成基础设施·零新计算）：分量≥3 → 合成「簇索引条」（source='dreamer'
+			// ── Auto-Dreamer 抽象合成（step·2026-08-30 goal 五连刀·论文 2605.20616 抽象合成意）──
+			//    **实勘改造**：题 token 聚簇在 DSH 形态不可行（碎片池 7 条/题面稀疏 0 簇·写入=浓缩field report式无 碎片层）
+			//    ——改用 **语义边连通分量**（现成基础设施·零新计算）：分量≥3 → 合成「簇索引条」（source='dreamer'
 			//    ·content=成员题列表+时间跨度）+explicit 边 0.6 链回各成员。**只新增不删除**（总案原文·防误杀）。
 			//    幂等=成员已被 dreamer 边链过即跳（分量只增不减·边判稳）。帽 1 簇/巡（dreamerClusters counter）。
 			try {
@@ -6305,7 +6502,7 @@ module.exports = {
 				);
 				const memInfo = db.prepare(
 					"SELECT id, title, space, ts FROM memories WHERE id = ? AND status = 'active' AND source != 'dreamer'",
-				); // 再审修：簇索引条不回流簇（A-22 可将 dreamer 条连进分量→链式繁殖·防）
+				); // 再审修：簇索引条不回流簇（可将 dreamer 条连进分量→链式繁殖·防）
 				let made = false;
 				for (const members of [...groups.values()].sort(
 					(a, b) => b.length - a.length,
@@ -6375,13 +6572,13 @@ module.exports = {
 				}
 			} catch (e12) {
 				ctx.logger?.warn?.(
-					`[living-memory] #12 dreamer fail: ${String(e12).slice(0, 60)}`,
+					`[living-memory] dreamer fail: ${String(e12).slice(0, 60)}`,
 				);
 			}
 
-			// ── #13 在库 TTL 到点退出（stepstep·2026-08-30 goal 五连刀·wb set_state_expiry 意）──
+			// ── 在库 TTL 到点退出（step·2026-08-30 goal 五连刀·set_state_expiry 意）──
 			//    声明过寿命的条（stale_state='ttl' 预写）valid_to 到点→nightly patrol批量转 aged（closed_at 墓碑·退出检索）。
-			//    **只动 ttl 标条**——#9 显式 valid_to 补记条（无标）继续走检索 ⏦ 软沉底（失效≠删除·P2 精神）。
+			//    **只动 ttl 标条**——显式 valid_to 补记条（无标）继续走检索 ⏦ 软沉底（失效≠删除·P2 精神）。
 			let ttlAgedCount = 0; // 8-31 锈面修⑤：本巡 TTL 到点退出条数（light sentry合法流转豁免面）
 			try {
 				const ttlHit = db
@@ -6393,12 +6590,12 @@ module.exports = {
 				if (ttlHit.changes > 0) {
 					stats.ttlExpired = (stats.ttlExpired || 0) + ttlHit.changes;
 					ctx.logger?.info?.(
-						`[living-memory] TTL 到点退出 ${ttlHit.changes} 条（aged·wb set_state_expiry）`,
+						`[living-memory] TTL 到点退出 ${ttlHit.changes} 条（aged·set_state_expiry）`,
 					);
 				}
 			} catch (e13) {
 				ctx.logger?.warn?.(
-					`[living-memory] #13 ttl fail: ${String(e13).slice(0, 60)}`,
+					`[living-memory] ttl fail: ${String(e13).slice(0, 60)}`,
 				);
 			}
 
@@ -6486,8 +6683,8 @@ module.exports = {
 						);
 					const pc = pcPath.endsWith("session_projcache.json")
 						? projcacheRows()
-						: JSON.parse(fs2.readFileSync(pcPath, "utf8")); // 庚刀修⑤（09-08 审计）：默认路径走 v5 双源 Map（旧单文件 stale 半盲）；drill 假投影旋钮（LEGION_SENTINEL_PROJCACHE 指定文件）仍直读
-					const PATH_KEYS = /^(cwd|workspace|workdir|rootdir|path)$/i; // 第三轮审计修（09-09 pending ruling②·TDZ 根治）：两声明上提至 walkEnt 消费前——原序 walkEnt 体内调 walkPc/PATH_KEYS 于 const 声明前=每夜 TDZ ReferenceError 被 catch 吞成「projcache 不可读」假警报（庚刀修⑤自伤·假绿族同族）
+						: JSON.parse(fs2.readFileSync(pcPath, "utf8")); // 庚批修⑤（09-08 审计）：默认路径走 v5 双源 Map（旧单文件 stale 半盲）；drill 假投影旋钮（LEGION_SENTINEL_PROJCACHE 指定文件）仍直读
+					const PATH_KEYS = /^(cwd|workspace|workdir|rootdir|path)$/i; // 第三轮审计修（09-09 pending ruling②·TDZ 根治）：两声明上提至 walkEnt 消费前——原序 walkEnt 体内调 walkPc/PATH_KEYS 于 const 声明前=每夜 TDZ ReferenceError 被 catch 吞成「projcache 不可读」假警报（庚批修⑤自伤·假绿族同族）
 					const walkPc = (o, parentKey) => {
 						if (o && typeof o === "object") {
 							for (const [k, v] of Object.entries(o)) {
@@ -6554,7 +6751,7 @@ module.exports = {
 							legitOut +
 							" 条）",
 					);
-				// ── design-approved
+				// ── design-approved「发」·A 线option·档=a companion script）──
 				// projcache=宿主投影缓存（dsh-session-projection-cache：never wrong only possibly stale·无定时 prune·
 				// 会话删除/处置事件驱动收缩·投影 256 行>物理 147 会话=宿主常态）——「cwd 计数不倒退」方向守卫证伪：
 				// 合法收缩全被当警报（09-03 -3/09-05 -26 两单均误报）。保留两有效哨面：pathHits 旧路径检测（L5245）
@@ -6562,7 +6759,7 @@ module.exports = {
 				if (!ftsReady) alarms.push("FTS 不可用");
 				if (pathHits > 0)
 					alarms.push("旧路径命中 " + pathHits + " 处（双形态）");
-				// ⑤ 办结状态位哨（design-approved
+				// ⑤ 办结状态位哨（design-approved option·lesson 「办结=改状态位非写叙述」）：
 				//    active todo 被 solved_by 边指向＝报捷 fact 已链回而 todo 本体漏打 done 戳（僵尸复活通道）——
 				//    只报不改，销账走space流程正路（词面自动闭环已死  closureCheck 自污染·显式边判据不重蹈）。
 				let solvedLeak = 0;
@@ -6655,7 +6852,7 @@ module.exports = {
 				.prepare(
 					"SELECT COUNT(*) c FROM conflicts WHERE pre_verdict IS NOT NULL AND status = 'pending'",
 				)
-				.get().c; // AUDN 预裁counter（wave#1）
+				.get().c; // AUDN 预裁counter（wave）
 			stats.conflictsPreclassifErrors = stats.conflictsPreclassifErrors || 0;
 			stats.lastCooccurPairs = cooccurPairs;
 			// ── step（同批）：nightly patrol存量清算段——治 698 条积压（每账每晚一段=36 夜负增长）；
@@ -6691,7 +6888,7 @@ module.exports = {
 						} // 审计 I7：⑬ 出口
 					}
 					stats.backlogSegments = 40 - budget;
-					// P0修（09-03 audit#6）：竞态死值修——同步段 patrol_last 写入时本值恒 0（赋值在 await 后），清算毕补写真值（最终一致）
+					// P0修（09-03 audit）：竞态死值修——同步段 patrol_last 写入时本值恒 0（赋值在 await 后），清算毕补写真值（最终一致）
 					try {
 						const plRow = db
 							.prepare("SELECT v FROM organ_meta WHERE k='patrol_last'")
@@ -6709,7 +6906,7 @@ module.exports = {
 					}
 				})();
 			}
-			// ── patrol 历史凭证（design-approved段，total 读旧值+1 滚动 ──
+			// ── patrol 历史凭证(ops note)：organ_meta 落库，重启不丢——at/merged/cooccurPairs/total 四字段，total 读旧值+1 滚动 ──
 			try {
 				let patrolTotal = 0;
 				try {
@@ -6732,7 +6929,7 @@ module.exports = {
 						a10Semantic: stats.semanticConflictsFound || 0,
 						triplesIn: stats.triplesIn || 0,
 						triplesTotal: stats.triplesTotal || 0,
-					}), // step：+backlogAccounts；#8 step：+KG 三元组counter
+					}), // step：+backlogAccounts；step：+KG 三元组counter
 				); // step N-c2：counter随巡持久化（跨重启对账面）
 			} catch {}
 			ctx.logger?.info?.(
@@ -6758,11 +6955,11 @@ module.exports = {
 				).run(String(closureCandidates));
 				if (closureCandidates > 1500)
 					ctx.logger?.warn?.(
-						`[living-memory] S4 阈值越限：闭环面候选 ${closureCandidates} >1500——closureCheck 预筛刀待启用（独立小刀pending approval）`,
+						`[living-memory] S4 threshold exceeded: closure candidates ${closureCandidates} > 1500 — closureCheck prefilter not enabled yet (tracked as a separate item)`,
 					);
 			} catch {}
 
-			// ── 提炼质检栏（design-approved窗（绿稳两月降月检） ──
+			// ── 提炼质检栏（design-approved P0 提炼质量环）：patrol 顺写 organ_meta distiller_qc——首检值本窗初始化·周检周一晨窗（绿稳两月降月检） ──
 			try {
 				const qc = db
 					.prepare("SELECT v FROM organ_meta WHERE k = 'distiller_qc'")
@@ -6837,7 +7034,7 @@ module.exports = {
 			// ── 备份巡检三证(design note)：TM 两证+快照自测 ──
 			//    ① TM 目标在位 ② 库未排除(ops note)③ nightly patrol日快照在位（自测）。
 			//    历史注记：07:15 批「双异盘」方案已被 TM 令覆盖撤销——首版「快照存在/可开/行数≥前日」旧口径代码见 备份/index.cjs.修法包前。
-			//    顺序修正（design-approved证）。
+			//    顺序修正（design-approved「同意」一行修）：本段原在快照段之前——每日首巡时今日快照未写致 snapOk 恒 false·移至快照段后（先备份后查证）。
 			try {
 				let tmMounted = false,
 					tmIncluded = false;
@@ -6884,7 +7081,7 @@ module.exports = {
 				);
 			}
 
-			// ── P0 同item：遥测周报常驻化（design-approved
+			// ── P0 同item：遥测周报常驻化（design-approved「同意」四点②）──
 			//    手跑转正：a companion script nightly patrol自动跑——7 天闸（organ_meta usage_weekly_last ISO 戳比对）；
 			//    回退开关 LEGION_USAGE_WEEKLY_OFF；沙箱演练态（LEGION_MODULE_SCAN_DIR 设）跳过——不触真库/真周报目录。
 			//    ⑬ 纪律：catch 必有出口（warn+stats.usageWeeklyErrors 计数透出）·失败不阻塞nightly patrol。
@@ -6928,7 +7125,7 @@ module.exports = {
 				);
 			}
 		}
-		// ── issue#1 修①（design-approved
+		// ── issue 修①（design-approved）：nightly patrol timer 纳入 Cordis 生命周期 ──
 		//    病灶：裸 setInterval 无句柄无清理——热换后旧 timer 残留、旧库连接已关、新旧 patrol 双跑；
 		//    修：ctx.effect 注册+清理函数回收+unref（不阻 headless 退出）。
 		ctx.effect(() => {
@@ -6986,7 +7183,7 @@ module.exports = {
 					as_of: {
 						type: "string",
 						description:
-							"可选·#10 as_of 时间旅行（search/timeline 用）：YYYY-MM-DD[THH:mm] 时点快照——只看该时点前已入库(ts≤)且未闭环(closed_at＞)且未失效(valid_to＞)的条目；日期粒度=该日零点口径",
+							"可选·as_of 时间旅行（search/timeline 用）：YYYY-MM-DD[THH:mm] 时点快照——只看该时点前已入库(ts≤)且未闭环(closed_at＞)且未失效(valid_to＞)的条目；日期粒度=该日零点口径",
 					},
 					limit: {
 						type: "number",
@@ -7007,12 +7204,12 @@ module.exports = {
 					if (action === "search") {
 						if (!args.query) return { error: "search 需要 query 参数" };
 						const limit = Math.min(Number(args.limit) || 5, 20);
-						// ── #10 as_of 时点检索路（wave·design-approved
+						// ── as_of 时点检索路（wave·design-approved「继续三车」·时序补全）──
 						//    治面：审档/复盘需「当时库什么样」——三窗过滤 ts≤as_of ∧ COALESCE(closed_at,'9999')＞as_of
 						//    ∧ COALESCE(valid_to,'9999')＞as_of（已入库∧未闭环∧未失效；'9999' 兜底与 +08:00 ISO 串
 						//    字典序天然兼容；日期粒度=该日零点口径）。专用精简路在正常路之前 return：跳过 vec/rerank/
 						//    spoken boost/cooccur/PPR/hop/community/audit gate（时点快照=词面审档场景·timeline24h 系当前窗
-						//    无意义）；A-24 弃权提示保留。无 env 开关（纯新增参数·缺省零行为变）。decay 用 as_of 锚
+						//    无意义）；弃权提示保留。无 env 开关（纯新增参数·缺省零行为变）。decay 用 as_of 锚
 						//    内联简化版（todo/essential/mirror 恒 1.0·fact·decision 28d·lesson 14d 统一档——时点快照=
 						//    当时相对新旧·不套运营新鲜度 P3 分档；decayOf 定义在正常路后 TDZ 不可达·故内联）。
 						const asOfRaw = String(args.as_of || "").trim();
@@ -7138,14 +7335,14 @@ module.exports = {
 						//    未接时返回空=单路直通，行为与旧版一致；接源后 FTS top50 ∪ vec top50 融合）。
 						let rows = null;
 						let viaFts = false;
-						let vecIds = []; // A-21 作用域修正（16:59·幻引用第三犯自伤）：提升到两 try 外——原 const 在 FTS try 内·cooccur try 引用不可达=整段静默灭
+						let vecIds = []; // 作用域修正（16:59·幻引用第三犯自伤）：提升到两 try 外——原 const 在 FTS try 内·cooccur try 引用不可达=整段静默灭
 						let recallMode = "full";
-						let qTokensShared = null; // optionoption（design-approved
-						let queryClass = "other"; // #8 SelRoute：分类结果外提（return 透出·try 外声明防 FTS 异常态丢）
+						let qTokensShared = null; // option（design-approved）：查询词外提——weighted 加权段（try 外）席内加成要用（同法·幻引用预防）
+						let queryClass = "other"; // SelRoute：分类结果外提（return 透出·try 外声明防 FTS 异常态丢）
 						try {
 							const tokens = qTokens(String(args.query)); // item：实词优选（注释见自动召回段同源函数）
-							qTokensShared = tokens; // optionoption：外提席内加成用
-							// #8 SelRoute 六类分类（观测版）：只计数+透出·零权重零排序变更——加权链候观测期满分布settled再pending approval
+							qTokensShared = tokens; // option：外提席内加成用
+							// SelRoute 六类分类（观测版）：只计数+透出·零权重零排序变更——加权链候观测期满分布settled再pending approval
 							queryClass = classifyQuery(args.query);
 							queryClassDist[queryClass] += 1;
 							const match = queryMatch(tokens);
@@ -7180,11 +7377,11 @@ module.exports = {
 									credentials,
 									String(args.query),
 									50,
-								); // 1a' 向量通道（RRF 第二路·故障时空通道降级·A-21 作用域提升：const→let 外提）
+								); // 1a' 向量通道（RRF 第二路·故障时空通道降级·作用域提升：const→let 外提）
 								let rrfBoost = null;
 								if (vecIds.length > 0) {
 									rrfBoost = new Map();
-									const K = 2; // 2026-08-31 item1（）：k=60 vec 消音翻案——扫描实证 k=2 总召回 22.2%→80.6%（Qdrant 08-22 经验律：单真相关场景 k=2~5）；spoken 层对 k 免疫=词汇鸿沟须粒度/前缀/底座治
+									const K = 2; // 2026-08-31 item1：k=60 vec 消音翻案——扫描实证 k=2 总召回 22.2%→80.6%（Qdrant 08-22 经验律：单真相关场景 k=2~5）；spoken 层对 k 免疫=词汇鸿沟须粒度/前缀/底座治
 									ftsRows
 										.slice(0, 50)
 										.forEach((r, i) => rrfBoost.set(r.id, 1 / (K + i + 1)));
@@ -7200,7 +7397,7 @@ module.exports = {
 											? rrfBoost.get(r.id) * 10
 											: 0; // RRF 分映射（多通道时）
 									const base = Math.max(ftsBase, vecPart);
-									return { row: r, base, ftsBase, vecPart }; // step：双分拆存（wb 吸收·成分不再被 max 吞）——vecPart=0 且 ftsBase 高=纯词面命中（巧合风险可判读·⑧弃权案素材）
+									return { row: r, base, ftsBase, vecPart }; // step：双分拆存（吸收·成分不再被 max 吞）——vecPart=0 且 ftsBase 高=纯词面命中（巧合风险可判读·⑧弃权案素材）
 								});
 								// vec 独有命中（FTS 未中但语义近）注入候选：RRF 分×10×0.5 折扣——
 								// 全量评测实证（75.8%<92.5%）：语义近似行不打折会顶掉跨域正确答案（加权链竞争失衡）
@@ -7222,7 +7419,7 @@ module.exports = {
 										} // step：vec 独有命中=纯语义列
 									}
 								}
-								// ── 融合面optionoption（design-approved
+								// ── 融合面option（design-approved）：前缀命中保底注入——spoken_prefix 与查询 bigram 字面交叠 ──
 								//    过双锚门（交叠词≥2 且含 ≥1 非高频词）且未在候选 → base=injectBase 固定分注入（ftsBase 头部级·低于
 								//    vec 排1 的 3.33）·帽 injectCap 条防挤正席。治「FTS 榜尾→融合 top5」晋席力（ 剪刀差案）。
 								//    回退开关 LEGION_SPOKEN_BOOST_OFF（演练开关族）；参数面 SPOKEN_BOOST_* env 族可扫（沙箱标定用）。
@@ -7262,7 +7459,7 @@ module.exports = {
 						}
 						if (rows === null) {
 							const words = qTokens(String(args.query)); // 兜底也走分词器（CJK 整句不空转）·item 实词优选同源
-							qTokensShared = words; // optionoption：兜底路同外提（席内加成不因 FTS 异常缺席）
+							qTokensShared = words; // option：兜底路同外提（席内加成不因 FTS 异常缺席）
 							const scan = db
 								.prepare(
 									"SELECT * FROM memories WHERE status IN ('active','merged','done') ORDER BY id DESC LIMIT 500", // step：scan 兜底路候选池同放宽（FTS 降级时行为一致）
@@ -7277,7 +7474,7 @@ module.exports = {
 								if (score > 0) rows.push({ row, base: score / words.length });
 							}
 						}
-						// ── option·线上 rerank 精排应用（design-approved
+						// ── option·线上 rerank 精排应用（design-approved「按推荐」·论证稿落地路径第 2 步）──
 						//    挂点=融合候选封盘后/加权链前：候选帽 RERANK_CAND 按 base 取头 → rerankDocs 精排 →
 						//    topN 以 relevance_score 为 base 独尺续链（未入列弃置·防量纲混排）；故障/无 key →
 						//    rows 不动原链直通。仅 viaFts 融合路挂（scan 兜底路=FTS 异常态不叠外部依赖）。
@@ -7321,14 +7518,14 @@ module.exports = {
 						//    todo 不衰减（现行待办永在顶）；decay 下限 0.05（旧记忆沉底不归零——遗忘是排序不是删除）。
 						const decayOf = (row) => {
 							if (row.type === "todo") return 1.0;
-							if (row.essential === 1) return 1.0; // #22 常驻核心（stepstep·wb ORIGIN/CORE 意）：亲判核心不衰——mirror 同款恒 1.0
+							if (row.essential === 1) return 1.0; // 常驻核心（step·ORIGIN/CORE 意）：亲判核心不衰——mirror 同款恒 1.0
 							if (String(row.source || "").startsWith("mirror:")) return 1.0; // step（18:41 maintainer）：进化史镜像=长期资产不衰减——旧而不过气（与 decision 56d 同精神·更彻底：进化史是space人格生长记录）
 							// P1 事件钟锚（2026-08-26）：decay 按 event_at（事件真实时点）算，缺省回落 ts——补记条目不再凭空折损半衰
 							const anchor = row.event_at || row.ts;
 							const t = Date.parse(String(anchor).replace(" ", "T"));
 							if (isNaN(t)) return 1.0;
 							const days = Math.max(0, (Date.now() - t) / 86400000);
-							// P3 space分档（design-approved正门对冲）；
+							// P3 space分档（design-approved·step wave）：xhs/fetcher fact 7d（对齐xhs TTL S 级·沉底≠消失下限 0.05+ttl 哨正门对冲）；
 							// brain/maintain decision 56d（maintainer与机制决策是长期资产）；其余 fact/decision 28d·lesson 14d 照旧；
 							// LEGION_DECAY_LEGACY=1 切回统一档（fair-ab A/B 对照开关·与 LEGION_RELEVANCY_OFF 同构）
 							let half;
@@ -7346,7 +7543,7 @@ module.exports = {
 								half = 56;
 							else
 								half = row.type === "decision" || row.type === "fact" ? 28 : 14;
-							// item FadeMem 重要性调制半衰（design-approved(-μ·I_n) 意）：
+							// item FadeMem 重要性调制半衰（design-approved A 级三件·FadeMem λ_n=λ_base·exp(-μ·I_n) 意）：
 							// 验证越多忘得越慢——validated_count≥2（真验证·列 DEFAULT 1=未验证）半衰延长
 							// half_eff=half×(1+0.35·ln(vc))·帽 2.0（vc=2→×1.24·vc=4→×1.48·vc≥8→×2.0）；
 							// vc≤1 →ln(1)=0 零影响（默认条目不动·基线稳）；LEGION_FADEMEM_OFF 回退（开关族同构）
@@ -7369,7 +7566,7 @@ module.exports = {
 						const weighted = rows.map((r) => {
 							const dec = decayOf(r.row);
 							let w = r.base * spaceWeight(r.row.space, callerSpace) * dec;
-							// ── optionoption（design-approved
+							// ── option（design-approved）：席内前缀交叠小加成（帽 seatBonusCap·加权后加·防爆）——
 							//    已在候选且有前缀交叠的行浮一点治席内排序；保底注入行（spokenBoost 已含加成）不重复叠加。
 							if (
 								!process.env.LEGION_SPOKEN_BOOST_OFF &&
@@ -7381,11 +7578,11 @@ module.exports = {
 							}
 							return { ...r, decay: Math.round(dec * 1000) / 1000, w };
 						});
-						// ── A-23 意图条件权重（wave·17:45 approved·Cortex query_router 意融入）：时间类 query
+						// ── 意图条件权重（wave·17:45 approved·Cortex query_router 意融入）：时间类 query
 						//    抬时序信号——论文实证 temporal 类受益最大；我方「上次/最近/之前」类 query 高频。
 						//    实现=temporal 意图时对非 todo 行的 decay 再开方（半衰折半·旧条沉更快·新条浮）——
 						//    非 temporal 零改动零回归；识别词面与 PANZ/轴提示同源（不新造轮子）。
-						//    #8 SelRoute：词表改引 SELROUTE_TEMPORAL_RE 单源（六类 temporal 类同词面）——防双份词表漂移
+						//    SelRoute：词表改引 SELROUTE_TEMPORAL_RE 单源（六类 temporal 类同词面）——防双份词表漂移
 						const isTemporalQ = SELROUTE_TEMPORAL_RE.test(
 							String(args.query || ""),
 						);
@@ -7397,8 +7594,8 @@ module.exports = {
 						}
 						// ── 四闸·retrieval gate（2026-08-22）：active todo 与近期闭环面同题 → w×0.2 沉底 + stale 标（僵尸压过新 fact 的病灶）──
 						let staleMarked = 0,
-							staleValidTo = 0; // P0修（09-03 audit#13）：valid_to 失效独立计数（不混入 staleTodos）
-						// #9 双时态（stepstep）：valid_to 已到点条目沉底×0.2（事件轴失效≠删除·与 P2 过时≠删除同精神）——Map 一次拉全量（现库稀疏·零成本）
+							staleValidTo = 0; // P0修（09-03 audit）：valid_to 失效独立计数（不混入 staleTodos）
+						// 双时态（step）：valid_to 已到点条目沉底×0.2（事件轴失效≠删除·与 P2 过时≠删除同精神）——Map 一次拉全量（现库稀疏·零成本）
 						const validToMap = new Map();
 						try {
 							for (const v of db
@@ -7413,7 +7610,7 @@ module.exports = {
 							if (vt9) {
 								r.w *= 0.2;
 								r.stale = "⏦" + String(vt9).slice(0, 10);
-								r.staleKind = "valid-to"; // P0修（09-03 audit#13）：透出层区分——原无 kind 被透出二分错标「已闭环未销账」
+								r.staleKind = "valid-to"; // P0修（09-03 audit）：透出层区分——原无 kind 被透出二分错标「已闭环未销账」
 								staleValidTo += 1; // 独立计数·不混入 staleTodos
 								continue;
 							} // 已失效沉底·标 ⏦（valid_to 前缀·与 #closedBy/#newerFact 区分）
@@ -7441,7 +7638,7 @@ module.exports = {
 								}
 							}
 						}
-						// ── Q3 延伸（2026-08-22 补刀task brief·轻量版）：todo 命中存在更晚同题 fact → 标注「已有较新闭环见 #id」──
+						// ── Q3 延伸（2026-08-22 补件task brief·轻量版）：todo 命中存在更晚同题 fact → 标注「已有较新闭环见 #id」──
 						//    与 stale 标互补：stale 查 72h 闭环面（含 done/销账类）；本条查「更晚的 fact」——防旧 todo 盖过新事实（审计环 2 变体）。
 						for (const r of weighted) {
 							if (
@@ -7484,7 +7681,7 @@ module.exports = {
 						let cooccurInjected = 0;
 						try {
 							const hitIds = new Set(weighted.map((r) => r.row.id));
-							// ── A-21 vec 种子进 PPR（wave·16:47 approved）：RRF 向量路命中并入种子集——
+							// ── vec 种子进 PPR（wave·16:47 approved）：RRF 向量路命中并入种子集——
 							//    治「半边图」（原只 FTS 命中进图·语义近邻不传播）。种子帽仍 20。
 							const pprSeeds = [...hitIds];
 							for (const vid of vecIds) {
@@ -7493,7 +7690,7 @@ module.exports = {
 							const pprMap = pprScores(
 								pprSeeds.slice(0, 20),
 								tokenize(String(args.query || "")),
-							); // A-03+A-21：种子=FTS∪vec 命中·teleport 回种子——查询相关
+							); // +种子=FTS∪vec 命中·teleport 回种子——查询相关
 							const partnerOf = new Map();
 							for (const p of db
 								.prepare("SELECT id_a, id_b FROM memories_cooccur")
@@ -7510,7 +7707,7 @@ module.exports = {
 								const inSet = [...ps].filter((x) => hitIds.has(x));
 								if (inSet.length > 0) {
 									const pp = pprMap ? pprMap.get(r.row.id) || 0 : 0;
-									r.w += Math.min(0.3, 0.1 + 0.2 * pp); // A-03：原静态 +0.1 → PPR 查询相关（近种子伙伴高分·远伙伴保底 0.1）
+									r.w += Math.min(0.3, 0.1 + 0.2 * pp); // 原静态 +0.1 → PPR 查询相关（近种子伙伴高分·远伙伴保底 0.1）
 									r.ppr = Math.round(pp * 1000) / 1000;
 									r.cooccur = inSet;
 									cooccurBoosted += 1;
@@ -7531,7 +7728,7 @@ module.exports = {
 									const row = ph.get(pid);
 									if (!row || row.status !== "active") continue; // 三案修补案3（09-09 approved）：enrich 注入面保持 active-only——范围决策非漏改（注入行在此后进入·不过主路 sink·同放宽须自带沉底·故不放宽）
 									const pp = pprMap ? pprMap.get(pid) || 0 : 0;
-									if (pprMap && pp <= 0.02) continue; // A-03：远伙伴不注入（治灌水·gm 高精门同精神）；无图回落旧平权
+									if (pprMap && pp <= 0.02) continue; // 远伙伴不注入（治灌水·graph-memory 高精门同精神）；无图回落旧平权
 									const dec = decayOf(row);
 									weighted.push({
 										row,
@@ -7604,9 +7801,9 @@ module.exports = {
 							}
 						}
 						weighted.sort((a, b) => b.w - a.w);
-						// ── A-02 泛化召回路（wave·gm recallGeneralized 意融入·插在 sort 后注入不参与排序）：精确路命中不足
+						// ── 泛化召回路（wave·graph-memory recallGeneralized 意融入·插在 sort 后注入不参与排序）：精确路命中不足
 						//    （<max(limit,4)）时社区兜底——命中条所在社区其它成员低权注入（0.08 档·配额 3·is_rep 优先）；
-						//    社区表=A-04 nightly patrol建（首夜前无表静默跳过）；独立开关 LEGION_GENERALIZED_OFF。
+						//    社区表=nightly patrol建（首夜前无表静默跳过）；独立开关 LEGION_GENERALIZED_OFF。
 						let communityInjected = 0;
 						let sagaHint = ""; // 件5 面2：社区叙事脉络行（泛化+聚齐两路共用）
 						if (
@@ -7650,7 +7847,7 @@ module.exports = {
 										communityInjected += 1;
 									}
 									weighted.sort((a, b) => b.w - a.w); // 审计 D6 修正（15:04）：注入后重排——原 sort 后 append 永垫底，命中近满时泛化条必被挤掉（注入失效面）
-									// ── 件5 面2 Saga 摘要消费（A-02 升格·2026-09-07）：泛化注入附社区叙事脉络（Graphiti Saga 意——散条→主题脉络）──
+									// ── 件5 面2 Saga 摘要消费（升格·2026-09-07）：泛化注入附社区叙事脉络（Graphiti Saga 意——散条→主题脉络）──
 									try {
 										const smRaw = db
 											.prepare(
@@ -7714,7 +7911,7 @@ module.exports = {
 							? weighted.slice(0, 1)
 							: weighted.slice(0, limit);
 						// ── 3b 记录点（阶段三·前置盘点定案）：picked 命中进进程 Map 差分攒批（零阻塞零写库——nightly patrol统一消费）──
-						//    P2（2026-08-26 stepwave）：stale_state='review'/'retired' 条目不进命中 Map——过时条不回弹 relevancy（拉锯治本）
+						//    P2（2026-08-26 step wave）：stale_state='review'/'retired' 条目不进命中 Map——过时条不回弹 relevancy（拉锯治本）
 						try {
 							if (!globalThis.__legionHitMap)
 								globalThis.__legionHitMap = new Map();
@@ -7725,7 +7922,7 @@ module.exports = {
 										(globalThis.__legionHitMap.get(s.row.id) || 0) + 1,
 									);
 						} catch {}
-						// ── P5 检索提示级闸（2026-08-26 stepwave·先提示后拦截·观察一周误伤率回投brain后定拦截级）──
+						// ── P5 检索提示级闸（2026-08-26 step wave·先提示后拦截·观察一周误伤率回投brain后定拦截级）──
 						//   A 命中面：picked 中 fact/decision 的 eff_ts 超 30d 线 ≥2 条且过半 → axisHint 提示引用前 timeline 核对（与 P2 review 口径对齐·lesson/todo 不算）；
 						//   B 盲区面（P2 发现补位：decay 沉底使超龄条检索不可见）：超龄相关条在 weighted 有而 picked 无（被挤出）≥2 → axisHint 提示沉底条数；
 						//   只提示不拦不压 w——零排序影响。
@@ -7762,7 +7959,7 @@ module.exports = {
 								type: s.row.type,
 								title: s.row.title,
 								confidence:
-									s.row.confidence !== undefined ? s.row.confidence : 1, // MP吸收#11：信任分透出（外部源 0.5·格式化器外显 ⚠外部源）
+									s.row.confidence !== undefined ? s.row.confidence : 1, // ：信任分透出（外部源 0.5·格式化器外显 ⚠外部源）
 								space: s.row.space,
 								score: Math.round(s.w * 1000) / 1000,
 								base: Math.round(s.base * 1000) / 1000,
@@ -7770,7 +7967,7 @@ module.exports = {
 									Math.round(
 										(s.ftsBase !== undefined ? s.ftsBase : s.base) * 1000,
 									) / 1000,
-								vecPart: Math.round((s.vecPart || 0) * 1000) / 1000, // step：双分直出（wb 吸收·08:57 批）——scan 兜底路无拆分归词面列
+								vecPart: Math.round((s.vecPart || 0) * 1000) / 1000, // step：双分直出（吸收·08:57 批）——scan 兜底路无拆分归词面列
 								...(s.rerank !== undefined ? { rerank: s.rerank } : {}), // option：rerank 精排分透出（判读位·双分拆同族）
 								...(s.decay !== undefined ? { decay: s.decay } : {}),
 								...(s.row.stale_state
@@ -7779,14 +7976,14 @@ module.exports = {
 										}
 									: {}), // P2：过时条带 staleMark 头标（审计补②：独立字段名——旧 stale 字段归retrieval gate专用，防同名覆盖）
 								...(s.cooccur ? { cooccur: s.cooccur } : {}),
-								...(s.ppr !== undefined ? { ppr: s.ppr } : {}), // A-03：查询相关图谱分透出（counter）
+								...(s.ppr !== undefined ? { ppr: s.ppr } : {}), // 查询相关图谱分透出（counter）
 								...(/^auto:session-[0-9a-f-]+$/.test(String(s.row.source || ""))
 									? {
 											episodic:
 												"原文可回流：memory action=read_episodic id=" +
 												s.row.id,
 										}
-									: {}), // B级4 情境锚刀（design-approved事实带原始情境指针——检索面透出回流指引·模型见 hint 知证据可升级原文（read_episodic 自带频控 4 轮/窗+charCap）
+									: {}), // B级4 情境锚刀（design-approved「开」·AnchorMem 事实满射回 immutable context 意）：auto:session-* 条=蒸馏事实带原始情境指针——检索面透出回流指引·模型见 hint 知证据可升级原文（read_episodic 自带频控 4 轮/窗+charCap）
 								...(String(s.row.source || "") === "dreamer"
 									? {
 											clusterHint: "簇索引条·成员可直达",
@@ -7796,10 +7993,10 @@ module.exports = {
 														String(s.row.content || "").match(/#\d+/g) || []
 													).map((x) => Number(x.slice(1))),
 												),
-											].slice(0, 10), // B级6 粗到细刀（design-approved源条 id 一跳）——纯透出零排序（件5/情境锚同构系列）
+											].slice(0, 10), // B级6 粗到细刀（design-approved「继续」·dreamer 簇升格入检索路）：粗层=泛词命中簇条天然定位·细层=clusterMembers 结构化直达（源条 id 一跳）——纯透出零排序（件5/情境锚同构系列）
 										}
 									: {}),
-								...(s.communityPath ? { communityPath: true } : {}), // A-02：社区泛化注入标记
+								...(s.communityPath ? { communityPath: true } : {}), // 社区泛化注入标记
 								...(s.entityHop ? { entityHop: true } : {}),
 								...(s.stale
 									? {
@@ -7829,7 +8026,7 @@ module.exports = {
 							via: viaFts ? "fts" : "scan",
 							recallMode,
 							callerSpace: callerSpace || "unknown",
-							queryClass, // #8 SelRoute：六类分类结果透出（观测·render/评测可读）
+							queryClass, // SelRoute：六类分类结果透出（观测·render/评测可读）
 							...(axisHint ? { axisHint } : {}),
 							...(sagaHint ? { sagaHint } : {}), // 件5 面2：Saga 社区叙事脉络（泛化/聚齐两路）
 							...(cooccurBoosted + cooccurInjected > 0
@@ -7855,7 +8052,7 @@ module.exports = {
 											"，仅返 top1 防漏",
 									}
 								: {}),
-							// ── A-24 显式弃权提示（wave·Cortex abstain 意融入）：命中不足且 top1 低置信 → 「库中无强相关·勿强答勿拼凑」。
+							// ── 显式弃权提示（wave·Cortex abstain 意融入）：命中不足且 top1 低置信 → 「库中无强相关·勿强答勿拼凑」。
 							//    治幻觉引用（论文实证：答案不在库时平均相关分 0.926 反而更高——分数阈值不能判弃权·须显式提示模型）。
 							...(picked.length === 0 || (picked[0].w < 0.15 && !allLow)
 								? {
@@ -7863,7 +8060,7 @@ module.exports = {
 											"⚠ 库中无强相关条目——勿强答勿拼凑引用；可换关键词重查或 timeline 浏览",
 									}
 								: {}),
-							// ── 补刀 1：盘账姿势机器闸（2026-08-22 补刀task brief·治审计环 1/4·Q1 折中=触发词+兜底不恒挂）──
+							// ── 补件 1：盘账姿势机器闸（2026-08-22 补件task brief·治审计环 1/4·Q1 折中=触发词+兜底不恒挂）──
 							//    query 命中盘账类词，或 0 命中/全 todo 命中 → 附近 24h timeline 速览 5 条（Q2=24h 滚动窗）。
 							...(() => {
 								const q = String(args.query || "");
@@ -8241,7 +8438,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 										0,
 										Math.min(Number(args.charCap) || 3000, 6000),
 									),
-									file: "living memory库内回落窗（source of record无此条·evo入/重建不收/刀③滤mirror 三因叠加族）",
+									file: "living memory in-store fallback window (absent from source of record; excluded by evo ingest, rebuild, and mirror filters)",
 									anchorLine,
 									windowRange: [neigh[lo2].id, neigh[hib2 - 1].id],
 									entries: hib2 - lo2,
@@ -8297,7 +8494,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 					}
 					if (action === "timeline") {
 						const limit = Math.min(Number(args.limit) || 10, 20);
-						// ── #10 as_of 三窗（timeline 同款·wave时序补全）：格式闸+ts≤∧COALESCE(closed_at,'9999')＞∧COALESCE(valid_to,'9999')＞
+						// ── as_of 三窗（timeline 同款·wave时序补全）：格式闸+ts≤∧COALESCE(closed_at,'9999')＞∧COALESCE(valid_to,'9999')＞
 						//    ——时点快照浏览（10-B search 路同口径）；无 as_of=原行为零变更。
 						const asOfTl = String(args.as_of || "").trim();
 						if (
@@ -8358,7 +8555,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 								"SELECT COUNT(*) AS c FROM memories WHERE status = 'active'",
 							)
 							.get();
-						// 裁一（design-approvedts 带 space」用法成实
+						// 裁一（design-approved option·another space案悬案一）：pinboardTop 缺省定向=caller 归属空间（与 🧭 归属行同源解析）——「stats 带 space」用法成实
 						const statsCallerOrgan =
 							organFromPath(
 								exec?.agent?.session?.header?.cwd ||
@@ -8398,18 +8595,18 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 								} catch {
 									return 0;
 								}
-							})(), // #8 step：实体 KG 活三元组（库直读最新口径）
+							})(), // step：实体 KG 活三元组（库直读最新口径）
 							validToCount: (() => {
 								try {
 									return db
 										.prepare(
-											"SELECT COUNT(*) c FROM memories WHERE status = 'active' AND valid_to IS NOT NULL AND valid_to <= ?", // P0修（09-03 audit#13）：补 active 过滤+nowIso 绑参（与retrieval gate L6258 同口径）
+											"SELECT COUNT(*) c FROM memories WHERE status = 'active' AND valid_to IS NOT NULL AND valid_to <= ?", // P0修（09-03 audit）：补 active 过滤+nowIso 绑参（与retrieval gate L6258 同口径）
 										)
 										.get(nowIso()).c;
 								} catch {
 									return 0;
 								}
-							})(), // #9 step：已到点失效条数（事件轴）
+							})(), // step：已到点失效条数（事件轴）
 							pinboardTop: (() => {
 								try {
 									// 🅱案(design note)：pinboard ranking候选榜首——stats 带 space 即定向本空间（触达面=每窗 stats 第一发；详表=a companion script <space>）
@@ -8479,7 +8676,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							episodicReadCount: stats.episodicReadCount || 0, // 批注解②（08:13）：read_episodic 用量计数——防黑盒工具无人知用量
 							episodicThrottled: stats.episodicThrottled || 0,
 							// ── 二轮审即修（22:33）：MP 吸收车三计数器补 stats 出口（⑬ 精神——计数不可见=半合规）──
-							countSkipCount: stats.countSkipCount || 0, // 甲档#4 计数闸拦截数
+							countSkipCount: stats.countSkipCount || 0, // 甲档 计数闸拦截数
 							edgeYieldDeadKey: stats.edgeYieldDeadKey || 0, // D11 补面死键让位数
 							vecChannelErrors: vecChannelErrors || 0, // 8-31 锈面修③：vec 通道故障累计（F0-1 静默死遥测透出）
 							rerankErrors: rerankErrors || 0, // option：rerank 通道故障累计（vecChannelErrors 同族透出·降级直通可见）
@@ -8499,6 +8696,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							autorecallPnRescue: stats.autorecallPnRescue || 0, // 柱环4/梁4 预备：专名救援路触发数（**原零出口**——L4696 自增而 return/render 双缺·⑬「四点接线」违反·2026-09-11 接续窗补齐）
 							autorecallKwRescue: stats.autorecallKwRescue || 0,
 							autorecallVecFallback: stats.autorecallVecFallback || 0, // option：主题词重查救回/vec 近邻兜底命中计数
+							dupWriteBlocked: dupWriteStat.blocked || 0, // 梁1b 同文幂等闸：memory_write 同文重复拒写数（模块级对象·09-11 kimi 21 连发案治本件②·⑬ 四点接线齐）
 							injectErrors: stats.injectErrors || 0, // 8-31 锈面修④：注入段兜底失败计数（F2-2 吞错出口透出）
 							a25ChaseErrors: stats.a25ChaseErrors || 0, // 甲批⑩ I6b chase 失败数
 							bothValidLinked: stats.bothValidLinked || 0, // 刀A：不可约对建边数
@@ -8511,30 +8709,30 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							compactionChaseErrors: stats.compactionChaseErrors || 0,
 							compactionBridgeErrors: stats.compactionBridgeErrors || 0,
 							// ── 09-03 P0 修复车十键透出（⑬ 纪律：计数不可见=半合规同型病·自立法不自犯）──
-							entityExtractErrors: stats.entityExtractErrors || 0, // #1 entity 段失败（原型链闸后仍兜底）
-							g2ArchiveErrors: stats.g2ArchiveErrors || 0, // #7 G2 归档失败（主卷不覆写保护在役）
-							mirrorWmErrors: stats.mirrorWmErrors || 0, // #9 mirror 水线读写失败
-							autorecallErrors: stats.autorecallErrors || 0, // #14 召回整链异常（原静默假绿面）
-							pressureAlertErrors: stats.pressureAlertErrors || 0, // #15 换窗警报写库失败
-							extractDupSkipped: stats.extractDupSkipped || 0, // #10 中断重抽闸拦截数
-							signalErrors: stats.signalErrors || 0, // #8 tool/result 信号段异常
+							entityExtractErrors: stats.entityExtractErrors || 0, // entity 段失败（原型链闸后仍兜底）
+							g2ArchiveErrors: stats.g2ArchiveErrors || 0, // G2 归档失败（主卷不覆写保护在役）
+							mirrorWmErrors: stats.mirrorWmErrors || 0, // mirror 水线读写失败
+							autorecallErrors: stats.autorecallErrors || 0, // 召回整链异常（原静默假绿面）
+							pressureAlertErrors: stats.pressureAlertErrors || 0, // 换窗警报写库失败
+							extractDupSkipped: stats.extractDupSkipped || 0, // 中断重抽闸拦截数
+							signalErrors: stats.signalErrors || 0, // tool/result 信号段异常
 							// ── 09-03 P2 修复车九键透出（⑬ 纪律同法：计数不可见=半合规）──
-							bufferRestoreErrors: stats.bufferRestoreErrors || 0, // #30 extract_buffer 启动恢复失败
-							validatedErrors: stats.validatedErrors || 0, // #31a A-19 段异常
-							semanticEdgeErrors: stats.semanticEdgeErrors || 0, // #31b A-22 段异常
-							pressureReadErrors: stats.pressureReadErrors || 0, // #31c 压力缓存读段失败（「无高压」假绿防线）
-							spokenFillWmErrors: stats.spokenFillWmErrors || 0, // #32 spoken 观测键写失败
-							extractEventsErrors: stats.extractEventsErrors || 0, // #33 extract events 增强段异常
-							conflictsPreverdicted: stats.conflictsPreverdicted || 0, // AUDN 预裁counter（wave#1·pending 已裁数）
-							assistantDistillLines: stats.assistantDistillLines || 0, // wave#3 蒸馏行计数
-							entitiesResolved: stats.entitiesResolved || 0, // wave#13 消解计数
+							bufferRestoreErrors: stats.bufferRestoreErrors || 0, // extract_buffer 启动恢复失败
+							validatedErrors: stats.validatedErrors || 0, // 段异常
+							semanticEdgeErrors: stats.semanticEdgeErrors || 0, // 段异常
+							pressureReadErrors: stats.pressureReadErrors || 0, // 压力缓存读段失败（「无高压」假绿防线）
+							spokenFillWmErrors: stats.spokenFillWmErrors || 0, // spoken 观测键写失败
+							extractEventsErrors: stats.extractEventsErrors || 0, // extract events 增强段异常
+							conflictsPreverdicted: stats.conflictsPreverdicted || 0, // AUDN 预裁counter（wave·pending 已裁数）
+							assistantDistillLines: stats.assistantDistillLines || 0, // wave 蒸馏行计数
+							entitiesResolved: stats.entitiesResolved || 0, // wave 消解计数
 							conflictsPreclassifErrors: stats.conflictsPreclassifErrors || 0,
-							evoFallbackWindows: stats.evoFallbackWindows || 0, // 回落窗使用数——09-06 审计补接（乙刀：赋值 L7143/透出读 L319 在而 return 漏=三点断一线永不显示·⑬ 自犯第三例根治；drill=render-stats-drill T0 动态断言新增键自动进面）
-							closureCheckErrors, // #35 四闸核心异常累计（模块级·同 toolUsageErrors 族）
-							surgerySkipVecEmbed, // #26a 挂牌期惰性补嵌跳过
-							surgerySkipWrite, // #26b 挂牌期写入冻结
-							queryClassDist: { ...queryClassDist }, // #8 SelRoute 六类分布（观测一周·本期零权重变更）
-							// ── A-2 counter白名单（step·07:30 maintainer·夜审wave F1 清单）：赋值面 35 键 return 仅 23——14 counter补全 ──
+							evoFallbackWindows: stats.evoFallbackWindows || 0, // 回落窗使用数——09-06 审计补接（乙批：赋值 L7143/透出读 L319 在而 return 漏=三点断一线永不显示·⑬ 自犯第三例根治；drill=render-stats-drill T0 动态断言新增键自动进面）
+							closureCheckErrors, // 四闸核心异常累计（模块级·同 toolUsageErrors 族）
+							surgerySkipVecEmbed, // 挂牌期惰性补嵌跳过
+							surgerySkipWrite, // 挂牌期写入冻结
+							queryClassDist: { ...queryClassDist }, // SelRoute 六类分布（观测一周·本期零权重变更）
+							// ── counter白名单（step·07:30 maintainer·夜审wave F1 清单）：赋值面 35 键 return 仅 23——14 counter补全 ──
 							bufferRestored: stats.bufferRestored || 0,
 							semanticConflictsFound: stats.semanticConflictsFound || 0,
 							mergeExecuted: stats.mergeExecuted || 0,
@@ -8576,7 +8774,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 										);
 										if (!m) return false;
 										try {
-											const tbl = projcacheRows().get(m[1]); // 庚刀修④（09-08 审计·stale 半盲闭合）
+											const tbl = projcacheRows().get(m[1]); // 庚批修④（09-08 审计·stale 半盲闭合）
 											const cwd = tbl?.identity?.cwd;
 											if (!cwd) return false;
 											const o = organFromPath(cwd);
@@ -8634,7 +8832,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 			name: "memory_extract",
 			description:
 				"Trigger extraction manually: hand the recent conversation buffer to the extraction model (its own API key) and write the results straight into the store. Nightly consolidation runs on its own (02:00-06:00), so this is only needed to force an early pass.",
-			// wave#6（09-07 maintainer·审计 P1-1）：sid 从 output.schema 移入 parameters——原错位致模型不可传参·他窗特权提炼失效
+			// wave（09-07 maintainer·审计 P1-1）：sid 从 output.schema 移入 parameters——原错位致模型不可传参·他窗特权提炼失效
 			parameters: {
 				type: "object",
 				properties: {
@@ -8688,7 +8886,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							historyText = parts.join("\n---\n").slice(-10000);
 						}
 					} catch (eEV) {
-						stats.extractEventsErrors = (stats.extractEventsErrors || 0) + 1; // P2修#33（09-03 audit）：events 增强段异常透出（原静默=重启后缓冲清零时取料失败不可见）
+						stats.extractEventsErrors = (stats.extractEventsErrors || 0) + 1; // P2 fix（09-03 audit）：events 增强段异常透出（原静默=重启后缓冲清零时取料失败不可见）
 						if (Date.now() - (stats._evWarnAt || 0) > 60000) {
 							stats._evWarnAt = Date.now();
 							ctx.logger?.warn?.(
@@ -8699,15 +8897,15 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							);
 						}
 					}
-					// P0修（09-03 audit#12）：historyText 改 fallback 显式传入（原覆盖全局 buffer=他窗历史残留污染本窗后续自动提炼）
+					// P0修（09-03 audit）：historyText 改 fallback 显式传入（原覆盖全局 buffer=他窗历史残留污染本窗后续自动提炼）
 					stats.bufferedChars = buffer.length;
-					// 审计 D1 配套（13:44）：手写显式提炼传 source——防被 A-12 水位路劫持（本窗历史必须用本调用源）
+					// 审计 D1 配套（13:44）：手写显式提炼传 source——防被 水位路劫持（本窗历史必须用本调用源）
 					const result = await runExtract({
 						auto: false,
 						sid: args.sid,
 						fallback:
 							historyText && historyText.trim() ? historyText : undefined,
-					}); // P0修：fallback 回落（水位账优先消化照step语义） // step-2c（10:35）：解除 source:buffer 旧路劫持——原显式传旧路全局 buffer·水位路（A-12/step-1 滚动消化）从未接管手动路径；sid 透传他窗特权
+					}); // P0修：fallback 回落（水位账优先消化照step语义） // step-2c（10:35）：解除 source:buffer 旧路劫持——原显式传旧路全局 buffer·水位路（step-1 滚动消化）从未接管手动路径；sid 透传他窗特权
 					if (result.skipped)
 						return {
 							extracted: 0,

@@ -68,9 +68,20 @@ const SELF_SKIP = (() => {
     const s = fs.readFileSync(__filename, 'utf8').split('\n')
     const a = s.findIndex((l) => l.startsWith('const BUILT_IN = {'))
     if (a < 0) return null
-    let b = a
-    while (b < s.length && s[b].trim() !== '}') b++
-    return [a + 1, b + 1]
+    // Brace counting — NOT "first line that trims to '}'". The closing brace may legally sit on the
+    // last entry's line, and that formatting-only variant used to widen the exemption window enough to
+    // swallow a real finding elsewhere in this file (fail-open, reproduced 2026-09-11). Unbalanced
+    // ⇒ null = no exemption, i.e. fail-closed (report more, never less). Aligned with the build-side
+    // V8b/V8g checks so both faces of the gate behave the same way.
+    let depth = 0, opened = false
+    for (let i = a; i < s.length; i++) {
+      for (const ch of s[i]) {
+        if (ch === '{') { depth++; opened = true }
+        else if (ch === '}') depth--
+      }
+      if (opened && depth <= 0) return [a + 1, i + 1]
+    }
+    return null
   } catch { return null }
 })()
 
