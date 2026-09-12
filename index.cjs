@@ -261,7 +261,10 @@ function loadCriteriaRules() {
 				//   数据文件写了别的键 ⇒ 该键**永不被取用且零信号**（审计实测：加第 10 键无 warn 无断言）。
 				try {
 					const _unknown = Object.keys(j).filter(
-						(x) => x !== "_comment" && !(x in CRIT_FLOOR),
+						// A″D6 修（2026-09-12）：原用 `x in CRIT_FLOOR` —— **走原型链** ⇒ `toString`/
+						//   `constructor`/`__proto__` 等原型名键被误判为「已在 FLOOR 中」⇒ **零信号**（既不
+						//   报未知键也不被取用）。改为 `Object.hasOwn`（只认自身属性）。
+						(x) => x !== "_comment" && !Object.hasOwn(CRIT_FLOOR, x),
 					);
 					if (_unknown.length) {
 						_unknownAll.push(..._unknown.map((x) => x + "@" + String(p).split("/").pop()));
@@ -4392,7 +4395,9 @@ module.exports = {
 			//   含秒毫秒），而 `memories.ts` 经 nowIso() 写成 `+08:00` 到分钟（真库样本
 			//   `2026-09-12T07:45+08:00`）⇒ 二者**字符串比较跨时区错位**（实测同分钟边界判窗外·
 			//   窗实为 7d+8h·方向保守）。改为与 nowIso **同形**（本地时区到分钟 + `+08:00`）。
-			//   ⚠ 本机时区固定 +08:00；若迁移时区，此处与 nowIso 须**同改**（否则同病复发）。
+			//   ⚠ **勿再引入本地分量**（A″D9 订正）：本式与 nowIso 同为「+8h → getUTC* → 硬编码 +08:00」，
+			//   六时区扫描（Shanghai/UTC/Tokyo/New_York/Berlin/Kiritimati）输出**恒定**、与 nowIso 逐值相等
+			//   ⇒ 已与 TZ 无关。早先注释写「若迁移时区须同改」是**错的**——照办会把本地分量重新引入＝重造 bug。
 			const _cutD = new Date(Date.now() - _d * 86400000 + 8 * 3600 * 1000);
 			const _p2 = (x) => String(x).padStart(2, "0");
 			const cut =
