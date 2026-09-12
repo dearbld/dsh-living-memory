@@ -46,7 +46,7 @@ const BUILT_IN = {
     '(?<![A-Za-z0-9])(?:sk|pk|ak|ark)-[A-Za-z0-9]{1,8}(?:[.\\-_][A-Za-z0-9]{4,}){2,}',
     '[a-f0-9]{28,}\\.[A-Za-z0-9]{10,}', 'MEYCIQ[A-Za-z0-9+/=]{20,}', 'MEUCI[A-Za-z0-9+/=]{20,}',
     '[A-Za-z0-9+/=]{120,}'],
-}
+}   // __BUILTIN_END__ single-source block terminator; every block-range scanner keys off this line
 
 const DEFAULT_FILES = ['index.cjs', 'client.js', 'cordis.patch.yml', 'dict-custom.json',
   'guard-rules.default.json', 'criteria-rules.default.json', 'package.json', 'README.md',
@@ -91,15 +91,12 @@ const SELF_SKIP = (() => {
     // swallow a real finding elsewhere in this file (fail-open, reproduced 2026-09-11). Unbalanced
     // => null = no exemption, i.e. fail-closed (report more, never less). Aligned with the build-side
     // V8b/V8g checks so both faces of the gate behave the same way.
-    let depth = 0, opened = false
-    for (let i = a; i < Math.min(s.length, a + 48); i++) {   // window cap: a stray '{' used to stretch the block range over real findings
-      for (const ch of s[i]) {
-        if (ch === '{') { depth++; opened = true }
-        else if (ch === '}') depth--
-      }
-      if (opened && depth <= 0) return [a + 1, i + 1]
-    }
-    return null
+    // 2026-09-12 (audit D3): key off an explicit terminator marker instead of brace counting --
+    // brace counting could be stretched by a stray '{' inside the literal and swallow real findings
+    // outside the block (reproduced: 2 injected lines were enough). The marker is single-source.
+    const e = s.findIndex((l) => l.includes('__BUILTIN_END__'))
+    if (e < 0 || e <= a) return null   // fail-closed: no exemption when the marker is missing
+    return [a + 1, e + 1]
   } catch { return null }
 })()
 
