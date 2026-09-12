@@ -73,6 +73,14 @@ const files = site.files || DEFAULT_FILES
 // Self-exemption: this script's own BUILT_IN literal necessarily contains the very
 // shapes it looks for (a credential regex has to spell the credential shape). Skip
 // exactly that block's line range when scanning this file -- nothing else is exempt.
+// 2026-09-12 (audit follow-up): decode \\uXXXX / \\u{...} before testing. An escaped payload
+// (e.g. a forbidden word written as \\u519B\\u4EE4) used to sail through this gate untouched --
+// the build-side checker decoded, this shipped gate did not. Same regex family both sides.
+const U4DEC = (s) => s.replace(/\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g, (m, a, b) => {
+  const cp = parseInt(a || b, 16)
+  return cp > 0x10FFFF ? m : String.fromCodePoint(cp)
+})
+
 const SELF_SKIP = (() => {
   try {
     const s = fs.readFileSync(__filename, 'utf8').split('\n')
@@ -84,7 +92,7 @@ const SELF_SKIP = (() => {
     // => null = no exemption, i.e. fail-closed (report more, never less). Aligned with the build-side
     // V8b/V8g checks so both faces of the gate behave the same way.
     let depth = 0, opened = false
-    for (let i = a; i < s.length; i++) {
+    for (let i = a; i < Math.min(s.length, a + 48); i++) {   // window cap: a stray '{' used to stretch the block range over real findings
       for (const ch of s[i]) {
         if (ch === '{') { depth++; opened = true }
         else if (ch === '}') depth--
@@ -110,7 +118,8 @@ for (const rel of files) {
       compiled++
       lines.forEach((text, i) => {
         if (isSelf && SELF_SKIP && i + 1 >= SELF_SKIP[0] && i + 1 <= SELF_SKIP[1]) return
-        if (re.test(text)) violations.push({ rel, line: i + 1, cls })
+        const dec = U4DEC(text)
+        if (re.test(text) || (dec !== text && re.test(dec))) violations.push({ rel, line: i + 1, cls })
       })
     }
   }
