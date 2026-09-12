@@ -49,6 +49,7 @@
     "cordis.patch.yml",
     "dict-custom.json",
     "guard-rules.default.json",
+    "criteria-rules.default.json",
     "scripts/preflight.cjs",
     "README.md",
     "NOTICE",

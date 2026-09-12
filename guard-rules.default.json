@@ -4,38 +4,32 @@
     {
       "re": "(?<![A-Za-z0-9])(?:sk|pk|ak|ark)-[A-Za-z0-9._\\-]{16,}",
       "flags": "i",
-      "reason": "credential-like",
-      "_note": "long single-segment key with a known prefix family (sk/pk/ak/ark)"
+      "reason": "credential-like"
     },
     {
       "re": "(?<![A-Za-z0-9])(?:sk|pk|ak|ark)-[A-Za-z0-9]{1,8}(?:[.\\-_][A-Za-z0-9]{4,}){2,}",
       "flags": "i",
-      "reason": "credential-like",
-      "_note": "multi-segment key (prefix-shortpart.sep.sep…), which a plain {16,} character class misses"
+      "reason": "credential-like"
     },
     {
       "re": "(?:api[_-]?key|secret|token|bearer)\\s*[:=]\\s*\\S{8,}",
       "flags": "i",
-      "reason": "credential-like",
-      "_note": "assignment form. Known trade-off: prose that DISCUSSES such an assignment can trip it"
+      "reason": "credential-like"
     },
     {
       "re": "(?:ignore|disregard|forget)\\s+(?:all\\s+)?(?:previous|prior|above|之前|以上)\\s*(?:instructions?|prompts?|指令|提示)",
       "flags": "i",
-      "reason": "instruction-payload",
-      "_note": "classic prompt-injection opener (EN + ZH)"
+      "reason": "instruction-payload"
     },
     {
       "re": "(?:你是系统|you\\s+are\\s+now\\s+(?:a|an|the)?)",
       "flags": "i",
-      "reason": "instruction-payload",
-      "_note": "role-hijack opener (EN + ZH); aligned with the in-source rule set (subset assertion)"
+      "reason": "instruction-payload"
     },
     {
       "re": "[A-Za-z0-9+/=]{80,}",
       "flags": "",
-      "reason": "encoded-payload",
-      "_note": "long base64-ish blob"
+      "reason": "encoded-payload"
     }
   ],
   "sensitive": "api[_-]?key|password|secret|token|bearer|private[_-]?key|credential",

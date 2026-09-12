@@ -181,6 +181,128 @@ function loadGuardRules() {
 	};
 }
 const GUARD = loadGuardRules();
+// ── 行为判据外置（三级链·2026-09-12 一车）：与 GUARD 同法，但**逐键单值语义** ──────
+//    加载序（先到先用·逐级兜底·任一环节失败不崩）：
+//      ① 用户目录 ~/.dsh/memory-criteria-rules.json —— 本机覆盖件（可省·建议 0600）
+//      ② 包内 criteria-rules.default.json —— 随包默认集（公开版＝公开词面／源仓＝内部词面）
+//      ③ CRIT_FLOOR 内置保底 —— 只含**最通用形态**·防两级皆缺时该判据完全失效
+//    合并语义（**逐键·与 GUARD_FLOOR.reject 的「恒追加」不同**）：命中即**整份取用**该键；
+//      floor 仅在该键两级皆缺/损坏时兜底——本组是**行为判据**（非安全判据），floor 保的是
+//      「功能可用」而不是「防线不破」，故**不设「关不掉」语义**（同 guard 的 sensitive 键）。
+//    未命中任一键时的后果（如实记录·README 同载）：该键退化为 CRIT_FLOOR 通用形态。
+//    env 覆盖：LEGION_CRITERIA_RULES_PATH（演练/沙箱指向用·同 LEGION_GUARD_RULES_PATH）。
+const CRITERIA_RULES_PATH = process.env.LEGION_CRITERIA_RULES_PATH ||
+	path.join(os.homedir(), ".dsh", "dsh-living-memory", "criteria-rules.json");
+const CRITERIA_DEFAULTS_PATH = path.join(__dirname, "criteria-rules.default.json");
+const CRIT_FLOOR = {
+	metaExclusion: {
+		re: "\\b(?:audit|checklist|inventory|summary|report|review|retrospective|handover|handoff|proposal|pending)\\b|盘点|清单|汇总|方案|草案|审计|自检",
+		flags: "i",
+	},
+	intentGate: {
+		re: "最近|今天|昨天|上周|上次|刚才|进度|状态|怎么|如何|什么|是否|继续|待办|进行|在办|完成|验收|查|找|搜|看|列|对比|差异|审计|检索|写入|召回|\\b(?:yesterday|today|recently|latest|last\\s+(?:week|time)|status|progress|pending|todo|done|audit|review|summary|how|what|where|which|who|why|continue|resume|find|search|look|list|show|check|compare|track|memory|recall|version|backup|snapshot|patrol|nightly|session|panel)\\b",
+		flags: "i",
+	},
+	stashHint: { re: "候|待.{0,2}(批|裁|验|收|复|提)|提醒", flags: "" },
+	taskCompleted: { re: "task_completed", flags: "" },
+	recallStopwords: { re: "已?(完成|办毕|办结|完结|更新|记录|说明|情况|事项|内容|工作|小结|汇总|总结|备忘|备注|处理|日常|杂项|其他|临时|测试|验证|整理|自查)", flags: "g" },
+	inboxPath: { re: "[/\\\\]inbox[/\\\\]|[/\\\\]inbox[/\\\\]", flags: "" },
+	exemptShort: { re: "^(继续|同意|好|嗯|行|可以|OK|ok|多谢|谢谢|收到|是|对)\\s*[。.!！~～]?$", flags: "" },
+	alertFamily: { re: "(?!)", flags: "" }, // AUDIT-FIX（A-D2）：原 "$^" 实测 test("")===true ⇒ 反向误判空标题
+	sysAutoPrefix: { re: "(?!)", flags: "" }, // AUDIT-FIX（A-D2）同上
+	// AUDIT-FIX-20260912（修复车·审计 C 路第 1 项普查漏项）：两处**输入匹配型行为判据**原以源码
+	//   字面量硬编（OPS_HOOK_RE 注入带钩词表 / CRIT_RE 冲突升级词）——D 链对二者的机改（词表整体
+	//   英文化 + flags 加 i）此前**未披露**，且下一次净化仍会被再改。此处并入三级链（实测键序：opsHook 第 10、sentryCritical 第 11·共 11 键），
+	//   与其余 9 键同口径：本 FLOOR 只写**通用形态**（英文·零内部词 ⇒ 净化链零命中），
+	//   内部词面由 ~/.dsh 数据文件与包内 default 供给。
+	opsHook: {
+		re: "in progress|in-progress|WIP|pending|handover|follow[- ]?up|watching|blocked",
+		flags: "i",
+	},
+	sentryCritical: {
+		re: "policy|charter|constitution|bylaw|directive",
+		flags: "i",
+	},
+};
+// AUDIT-FIX-20260912（A-D1/A-I1·独立审计 A 路）：
+//   ①**flags 白名单**——`.test()`/`.match()` 面消费的键一律剥掉 `g`/`y`（带 lastIndex 状态 ⇒ 连续调用
+//     交替 true/false·实测复现 `true,false,true,false`）；只有**消费面为 `.replace()`** 的键（replace 自行
+//     重置 lastIndex）才放行 g。剥掉的 flag **不静默丢弃**：计入 `CRIT_FLAGS_DROPPED`（模块级收集·debug 可读）。
+//   ②`re` **不再 trim**：`^ ` 这类以空白为语义的正则会被 trim 放大匹配面；空白仅用于「是否为空」判定。
+const CRIT_G_OK = { recallStopwords: 1 }; // flags 含 g 且**消费面安全**的键白名单（逐键声明·可 grep）
+const CRIT_FLAGS_DROPPED = []; // 被剥 flag 的键名（审计可见性出口）
+function critCompile(entry, key) {
+	if (!entry || typeof entry !== "object") return null;
+	const src = typeof entry.re === "string" ? entry.re : "";
+	if (!src.trim()) return null;
+	let fl = typeof entry.flags === "string" ? entry.flags : "";
+	if (/[gy]/.test(fl) && !CRIT_G_OK[key]) {
+		fl = fl.replace(/[gy]/g, "");
+		CRIT_FLAGS_DROPPED.push(key);
+	}
+	try {
+		return new RegExp(src, fl);
+	} catch {
+		return null; // 单键非法 ⇒ 回退下一级（不整份报废·与 guardDedupe 宽容口径同族）
+	}
+}
+function loadCriteriaRules() {
+	// **逐键三级回退**：键 k 取「用户件 → 包内 default → CRIT_FLOOR」中**第一个提供该键的层**；
+	//   某层缺某键**不影响其余键**（「逐键整份取用」＝该键取了就不再往下找，而非整层淘汰）。
+	//   与 GUARD_FLOOR.reject 的「恒追加」不同：本组是行为判据，floor 保的是功能可用而非防线不破。
+	const layers = [];
+	const _unknownAll = []; // AUDIT-FIX（A-D5）：数据文件里 CRIT_FLOOR 之外的键（永不被取用·必须可见）
+	for (const p of [CRITERIA_RULES_PATH, CRITERIA_DEFAULTS_PATH]) {
+		try {
+			const j = JSON.parse(fs2.readFileSync(p, "utf8"));
+			if (j && typeof j === "object") {
+				layers.push([p, j]);
+				// AUDIT-FIX-20260912（A-D5）：**未知键可见化**——键集合定义源单一（只遍历 CRIT_FLOOR），
+				//   数据文件写了别的键 ⇒ 该键**永不被取用且零信号**（审计实测：加第 10 键无 warn 无断言）。
+				try {
+					const _unknown = Object.keys(j).filter(
+						(x) => x !== "_comment" && !(x in CRIT_FLOOR),
+					);
+					if (_unknown.length) {
+						_unknownAll.push(..._unknown.map((x) => x + "@" + String(p).split("/").pop()));
+					}
+				} catch {}
+			}
+		} catch {} // 文件缺失/JSON 损坏 → 该层整层跳过（不崩·不牵连其余层与其余键）
+	}
+	const out = {};
+	const from = {};
+	for (const k of Object.keys(CRIT_FLOOR)) {
+		let re = null;
+		for (const [p, j] of layers) {
+			const r = critCompile(j[k], k);
+			if (r) {
+				re = r;
+				from[k] = p;
+				break;
+			}
+		}
+		if (!re) {
+			re = critCompile(CRIT_FLOOR[k], k) || new RegExp("(?!)"); // AUDIT-FIX（A-D2）：(?!) 才是真·永不匹配
+			from[k] = "floor";
+		}
+		out[k] = re;
+	}
+	out.from = from; // 逐键来源（诊断/drill 读）
+	out.unknownKeys = _unknownAll; // AUDIT-FIX（A-D5）：数据文件里被忽略的键（空数组=无）
+	out.flagsDropped = CRIT_FLAGS_DROPPED; // AUDIT-FIX（A-D1）：被剥掉 g/y 的键
+	if (_unknownAll.length) {
+		try {
+			console.warn(
+				"[living-memory] criteria rules: 未知键被忽略（须先加进 CRIT_FLOOR 才生效）: " +
+					_unknownAll.join(","),
+			);
+		} catch {}
+	}
+	out.source = from.metaExclusion || "floor"; // 兼容旧口径：主来源
+	return out;
+}
+const CRIT = loadCriteriaRules();
 // ── Tokenizer dictionary and entity kinds are data, in two layers ───────────────
 // jieba's built-in dictionary splits domain-specific compound words, which hurts
 // recall (a three-character term becomes two fragments and stops matching). Proper
@@ -293,9 +415,16 @@ function stripUrls(text) {
 	return String(text).replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, (m) => {
 		const schemeEnd = m.indexOf("://");
 		const scheme = m.slice(0, schemeEnd).toLowerCase();
+		// ── 2026-09-12 二车（裁 11·判据变已报批）：**保留 URL 短指纹** ──────────────
+		//   病根：http/https 一律替换为 `[url]` ⇒ 两条「**仅 URL 不同**」的记忆落库后文本**全同**
+		//         ⇒ 同文幂等闸误判同文并硬拦（URL 差异是有意义的实质差异·B 路 D4）。
+		//   修法：替换串带 URL 的 md5 前 8 位（**不泄址·不可逆**）⇒ 同文闸可区分「仅 URL 不同」
+		//         与「完全同文」；指纹随 content 落库 ⇒ 注入面/回流面可审计「此处曾有外链」。
+		//   兼容：旧库存量条目为 `[url]` 形态 ⇒ 与新条目不再判同文（**漏拦不误拦·安全方向**）。
+		const fp = crypto.createHash("md5").update(m).digest("hex").slice(0, 8);
 		return scheme === "http" || scheme === "https"
-			? "[url]"
-			: "[url:" + scheme + "//…]";
+			? "[url:" + fp + "]"
+			: "[url:" + scheme + "//…:" + fp + "]";
 	}); // step B-3：全套 scheme（ftp/ws/wss/file/sftp 等同脱）——非 http 族带 scheme 指纹留痕（可审计「曾有外链」不泄址）
 }
 
@@ -500,6 +629,8 @@ function memoryRender(args, value) {
 			_t("高压错", v.pressureAlertErrors);
 			_t("重抽拦", v.extractDupSkipped);
 			_t("同文拦", v.dupWriteBlocked); // 梁1b 同文幂等闸：memory_write 同文重复拒写数（09-11 kimi 21 连发案治本件②·⑬ 四点接线齐）
+			_t("元清理", v.organMetaPruned);
+			_t("元清理错", v.organMetaPruneErrors); // AUDIT-FIX（A-D3）：错误侧 render（原缺） // 三车：organ_meta
 			_t("失效条", v.validToCount); // ⑬ 补（2026-09-11）：事件轴已到点失效条数原「有 return 无 render」＝半合规——本次 21 条污染沉底同车补，载入后 stats 面直接可见处置结果（验收证据位）
 			// ── ⑬ option补齐（design-approved「只补错误/拦截类」·共 6 键·逐字核自增点与语义后纳入）──
 			//    纳入口径＝「错误/拦截/告警」语义且有真自增点；**观测类不纳**（edgeYieldDeadKey「让位计数」/bothValidLinked/autoEdges/routedCount/spaceGatePassed/signalTriggered 等留盘点面）
@@ -1115,7 +1246,7 @@ async function vecRecallCore(conn, creds, query, topK) {
 //    「精排 top10 入加权链」原案·防 rerank 0~1 与 vecPart×10 新旧量纲混排）。
 //    凭据共享 vecCredCache（EMBEDDING_BAILIAN_KEY 同 key 同域·零新凭据·计费=调用次数/Token 分毫级）；
 //    故障/无 key/超时 → null → 原链直通（base 不动）+计数透出（vecChannelErrors 同族·F0-1 静默死教训）。
-//    回退开关 LEGION_RERANK_OFF（演练开关族·A14 同构）；模型 LEGION_RERANK_MODEL 可扫。
+//    回退开关 LEGION_RERANK_OFF（演练开关族·同构）；模型 LEGION_RERANK_MODEL 可扫。
 //    默认 gte-rerank-v2（09-02 23:00 定标·沙箱四臂翻转实证：总 84.7/lexical 85.1/term 满分/MRR 0.717 全面最强——
 //    专名域零误判正治  病灶；原五裁默认 qwen3.7-text-rerank spoken 鸿沟层 54.2% 专项更强留 env 一键切·09-02 双冒烟 200）。
 const RERANK_MODEL = process.env.LEGION_RERANK_MODEL || "gte-rerank-v2";
@@ -1307,8 +1438,7 @@ function closureCheck(conn, title, content, todoId) {
 		//      「关于事实的记忆」（盘点/清单/裁处/审计/复现/汇总类条目）不再被当「事实本体」；
 		//    ②SQL 时间窗下推：ts >= 72h 前在 SQL 先过滤（修 LIMIT 150 截断漂移——库增长后老僵尸被挤出窗）；
 		//    ③同批互证防线由①元类全排承担（META_RE 72h 窗全排·B1 成果）；同日真 fact 为有效证据，不作时间性排除（C 案终谳·design-approved·step）。
-		const META_RE =
-			/盘点|清单|裁处|裁断|pending ruling|裁定|裁决|判定|剩.{0,4}条|清理field report|汇总|审计|复现|自检|escalate|方案|awaiting approval|草案|todo清理|待办清理|清理需区分|区分.{0,8}(真活|已闭环|被超越)|receipt|notify|field report|交接|追加|log|open item|counter|\b(?:audit|checklist|inventory|summary|report|review|retrospective|handover|handoff|proposal|pending)\b/i; // 0.2.0 首发：英文元类分支追加（\b 边界·i flag 中文零影响）——英文「关于事实的记忆」证据同排除
+		const META_RE = CRIT.metaExclusion; // 元类排除词表已外置（criteria-rules.default.json·2026-09-12 一车·原字面量→三级链取用）
 		const pastIso = (msAgo) => {
 			const d = new Date(Date.now() + 8 * 3600 * 1000 - msAgo);
 			const p = (n) => String(n).padStart(2, "0");
@@ -1707,7 +1837,7 @@ function ensureFts(dbConn) {
 		} catch {}
 		try {
 			dbConn.exec("ALTER TABLE memories ADD COLUMN valid_to TEXT");
-		} catch {} // 双时态（step·2026-08-30）：事件轴失效戳——closed_at=事务轴·valid_to=事件轴（五轴齐）·写路 A14 格式闸同款
+		} catch {} // 双时态（step·2026-08-30）：事件轴失效戳——closed_at=事务轴·valid_to=事件轴（五轴齐）·写路 格式闸同款
 		try {
 			dbConn.exec(
 				"ALTER TABLE memories ADD COLUMN essential INTEGER DEFAULT 0",
@@ -2014,7 +2144,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 							};
 						}
 						// ── C 档open item词表软提示（2026-08-24 P1-2 细则核准·v2 收窄无「发」族）：open item型建议 fact 装（返回值提示·模型可见）──
-						if (/候|待.{0,2}(批|裁|验|收|复|提)|counter|open item|提醒/.test(t0)) {
+						if (CRIT.stashHint.test(t0)) { // C 档open item词表已外置（criteria-rules.default.json·2026-09-12 一车）
 							cGateHint =
 								"C档提示：todo「" +
 								t0.slice(0, 30) +
@@ -2055,10 +2185,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					const _recallTitleTight = _recallTitleRaw.replace(/\s/g, "");
 					const _recallCore = _recallTitleTight
 						.replace(/[\p{P}\p{S}]/gu, "")
-						.replace(
-							/已?(完成|办毕|办结|完结|wrap-up|更新|记录|说明|情况|事项|内容|工作|小结|汇总|总结|备忘|备注|处理|日常|杂项|其他|临时|测试|验证|整理|自查)/g,
-							"",
-						);
+						.replace(CRIT.recallStopwords, ""); // 泛词表已外置（2026-09-12 一车）
 					const _recallFirst = String(args.content || "")
 						.split(/[。！？!?；;\n]/)[0]
 						.replace(/\s/g, "");
@@ -2237,7 +2364,7 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 						);
 					}
 				}
-				// A14（2026-08-26 修法包·wave 审计）：event_at 格式校验——非法字符串回落 null（防 P2 超龄线 COALESCE 字符串比较语义漂移）
+				// （2026-08-26 修法包·wave 审计）：event_at 格式校验——非法字符串回落 null（防 P2 超龄线 COALESCE 字符串比较语义漂移）
 				// E2（design-approved同车）：补月日范围校验——2026-13-99 类越界值不再过闸
 				let eventAt = String(args.event_at || "").trim() || null;
 				if (
@@ -2247,11 +2374,11 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					)
 				) {
 					logger?.warn?.(
-						`[living-memory] event_at 格式非法回落（A14）: "${String(args.event_at).slice(0, 30)}"`,
+						`[living-memory] event_at 格式非法回落: "${String(args.event_at).slice(0, 30)}"`,
 					);
 					eventAt = null;
 				}
-				let validTo = String(args.valid_to || "").trim() || null; // 双时态：A14 同款格式闸
+				let validTo = String(args.valid_to || "").trim() || null; // 双时态：同款格式闸
 				if (
 					validTo !== null &&
 					!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T(0[0-9]|1\d|2[0-3]):[0-5]\d)?$/.test(
@@ -2931,7 +3058,11 @@ module.exports = {
 
 		// ── 记忆注入：living memory最新记忆进每窗口系统提示（order 300 尾部·低频变化·前缀缓存友好）──
 		// Injection-hook vocabulary (completion words such as done/closed are deliberately excluded)
-		const OPS_HOOK_RE = /in progress|in-progress|WIP|pending|handover|follow[- ]?up|watching|blocked/i;
+		// AUDIT-FIX-20260912（修复车·审计 C 路第 1 项真漏项）：字面量并入三级链第 10 键 `opsHook`
+		//   （源仓词面在 ~/.dsh 数据文件/criteria-rules.default.json·公开面见 CRITERIA_PUBLIC）。
+		//   动因：该判据曾被净化链整体英文化 + 加 i 而**未披露**（C 路实测产物＝/in progress|…/i）⇒
+		//   字面量留码面＝每次净化都再改一次行为且无人知；外置后 code 面零机改。
+		const OPS_HOOK_RE = CRIT.opsHook;
 		if (systemPrompt !== undefined) {
 			// 案C(ops note)：section→context 迁移——section 路 scope 层断链（死），
 			// context 投影路=每轮 materialize（活·autorecall 同位）；接口同构（types L47-74）·
@@ -3115,11 +3246,11 @@ module.exports = {
 							if (nudgeBd && nudgeBd.pendingNudge) {
 								nudgeText =
 									nudgeBd.pendingNudge === "B"
-										? "\n🔔 纪律提示：本窗已读inbox但未查living memory——请立即 memory search/timeline 补查（directive总纲「读inbox⇄查living memory」绑定）"
+										? "\n🔔 纪律提示：本窗已读收件箱但未查记忆库——请立即 memory search/timeline 补查（「读收件箱⇄查记忆库」绑定）"
 										: nudgeBd.pendingNudge === "A"
-											? "\n🔔 纪律提示：开局两轮未检 memory 调用——请立即执行开局三查（this space记忆/全局待办/相关经验）"
+											? "\n🔔 纪律提示：开局两轮未检 memory 调用——请立即执行开局三查（本模块记忆/全局待办/相关经验）"
 											: nudgeBd.pendingNudge === "M"
-												? "\n🔔 记忆先行：上轮directive实勘/结论前未先查living memory——请先 memory search（红线级hard rule·option观测期不拦截）"
+												? "\n🔔 记忆先行：上轮指令实勘/结论前未先查记忆库——请先 memory search（红线级硬性规则·观测期不拦截）"
 												: ""; // 审计 I-2 修：else 改显式 === 'M' 判——原 else 分支兜底·未来新增 nudge 类型会误显 M 文案
 								if (nudgeBd.pendingNudge === "M")
 									nudgeBd.nudgeMShownAt = Date.now(); // option：提示展示戳（10min 内补查记听从）
@@ -3136,7 +3267,7 @@ module.exports = {
 								.reverse(); // item ASC append-only
 							if (fb.length > 0) {
 								let t =
-									"## 暖暖 living memory · latest entries（⚠ 自动注入=参考级·**跨窗兜底**〔归属失联·非本空间速览〕）\n" +
+									"## 暖暖 记忆库 · 最新条目（⚠ 自动注入=参考级·**跨窗兜底**〔归属失联·非本空间速览〕）\n" +
 									fb
 										.map(
 											(r) =>
@@ -3154,7 +3285,7 @@ module.exports = {
 										.join("\n");
 								if (essRows.length > 0)
 									t +=
-										"\n🧭 常驻核心（亲标不衰·勿当directive）：" +
+										"\n🧭 常驻核心（亲标不衰·勿当指令）：" +
 										essRows
 											.map(
 												(r) =>
@@ -3170,7 +3301,7 @@ module.exports = {
 						// v2.3 ⑥：注入头部权威级标识——与directive层显式分级（防「自动注入」被误读为指令）
 						// v2.4 caller-first：+「自家速览≠检索」（防窗口把被动注入的本空间近况误当已检索）
 						let text =
-							"## 暖暖 living memory · latest entries（⚠ 自动注入=参考级，非directive·自家速览≠检索；详情用 memory action=search 检索）\n" +
+							"## 暖暖 记忆库 · 最新条目（⚠ 自动注入=参考级·自家速览≠检索；详情用 memory action=search 检索）\n" +
 							rows
 								.map(
 									(r) =>
@@ -3186,7 +3317,7 @@ module.exports = {
 								.join("\n"); // P4 时标+item ENGRAM citation（[#id·type] 可核查引用）；原注：条目头事件时标（MM-DD·≤8字）——注入即带时间观念，directive「时间时效中轴」注入面落点
 						if (essRows.length > 0)
 							text +=
-								"\n🧭 常驻核心（亲标不衰·勿当directive）：" +
+								"\n🧭 常驻核心（亲标不衰·勿当指令）：" +
 								essRows
 									.map(
 										(r) => "[" + r.type + "] " + String(r.title).slice(0, 30),
@@ -3280,7 +3411,7 @@ module.exports = {
 						}
 						if (todos.length > 0)
 							text +=
-								"\n## 现行待办（最新 2 条·directive型受保护，全量用 memory action=search query=待办）\n" +
+								"\n## 现行待办（最新 2 条·指令型受保护，全量用 memory action=search query=待办）\n" +
 								todos
 									.map(
 										(r) =>
@@ -3301,9 +3432,9 @@ module.exports = {
 						// ── 微型件①：注入纪律行（源：toolkit 注入纪律·2026-08-21 B2 借鉴）——软防线防过期记忆误导 ──
 						//    v2.3 ⑤（8-24 maintainer）：「不可信」→「慎用」——不可信易被过度弃用，慎用=校核后可用
 						text +=
-							"\n（历史记忆为慎用参考——引用前以当轮实况与directive source of record核对；被动注入不构成已检索）";
+							"\n（历史记忆为慎用参考——引用前以当轮实况与正本核对；被动注入不构成已检索）";
 						// ── 回显step消费（21:43 maintainer）：观测升格注入可见——本会话被 A/B 闸点名时·注入面带可见提示（模型看得见才纠得偏）──
-						// D2 修正（21:48 逐字审·A16 同型病三犯）：bindMap 键=firehose 侧真实 bindSid（session.id 缺失时回落 '_anon'）——消费侧同键序查（精确→sessionOfLastTurn→_anon），禁单键直查（串键=nudge 永不显示）
+						// D2 修正（21:48 逐字审·同型病三犯）：bindMap 键=firehose 侧真实 bindSid（session.id 缺失时回落 '_anon'）——消费侧同键序查（精确→sessionOfLastTurn→_anon），禁单键直查（串键=nudge 永不显示）
 						// 8-31 option：消费段上提案A 判定前（此处仅拼接）——M 型（轮内记忆先行）同消费
 						// ── 压缩桥刀⑤（09-03 maintainer同车）：压缩态自知——本窗被压过则注入面明示（早期细节离窗·经锚条回流）──
 						try {
@@ -4202,18 +4333,118 @@ module.exports = {
 						String(eR).slice(0, 60),
 				);
 			}
+			// AUDIT-FIX-20260912（修复车·审计 C 路第 4 项）：原式 `persisted === 0 ? anchorCountOf(sid) : 0`
+			//   只在**键缺失**时才吃第三源 ⇒ 「键滞后」（键=2 而库内锚条=3）时注入面**少报**，与写侧
+			//   `nextCompactionN` 的无条件三源取大**口径不一致**。修：读侧同样无条件三源取大。
+			//   ⚠ 代价（诚实账）：`memories.source` 无二级索引 ⇒ 每轮注入面多一次全表 COUNT（~ms 级）；
+			//   库量级上万条后应加索引（登记为候选优化），届时本注释同步更新。
 			return Math.max(
 				persisted,
-				persisted === 0 ? anchorCountOf(sid) : 0,
+				anchorCountOf(sid),
 				compactionBySid.get(sid) || 0,
 			);
+		};
+		// AUDIT-FIX-20260912（修复车·审计 C 路第 5 项·P0-2 主体）：**回落落键**。
+		//   ⚠ **因果模型订正（审计 A 路 D1·2026-09-12）**：原注释称「锚条入册失败 ⇒ 序数丢失」**与实测
+		//   不符**——`nextCompactionN` 在锚条 INSERT **之前**即已 UPSERT 写键并回写（v+1），故「仅锚条
+		//   失败」时键仍在、重启后下一号与不落键**完全等价**（A/B 对照实测 key/n 全同）。真实增量面
+		//   只有一处：**键写本身瞬时失败**（nextCompactionN 的 catch(eC) 路径·不落键）——**且**随后
+		//   锚条/建边路径也失败（即 catch(eB) 被触发）时，回落落键才补上事实源（实测 NEW key=1 保留
+		//   vs LEGACY key 缺失·下一号 2 vs 1）；**仅键写失败而锚条成功时本函数不被调用**（审计 A′ 实证），
+		//   此时第三源（锚条数）兜住、无损害。叠加 MAX 语义即**幂等冗余**。
+		//   记账口径：本函数是**二次机会垫片**（可达面＝键写失败 ∧ catch(eB) 触发），不是 P0-2 主体防线。
+		//   为何必须独立成件：drill 探针只能触达模块作用域声明，内联回 catch 则**不可测**
+		//   （自建防线必被独立验证）⇒ 抽成函数是真能测的前提。
+		//   ⚠ 与之配套的 prune 侧「保信息闸」见 pruneOrganMeta——两道合璧才闭合本缺陷：
+		//     落键保证「即使锚条没入册、事实源仍在」，保信息闸保证「该键不会被当冗余缓存清掉」。
+		const fallbackWriteCompactionN = (sid, n) => {
+			if (!sid || !(Number(n) > 0)) return false;
+			try {
+				db.prepare(
+					"INSERT INTO organ_meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = CAST(MAX(CAST(v AS INTEGER), CAST(excluded.v AS INTEGER)) AS TEXT)",
+				).run("compaction_count." + sid, String(Number(n)));
+				return true;
+			} catch (eF) {
+				stats.compactionBridgeErrors = (stats.compactionBridgeErrors || 0) + 1; // ⑬ 出口（回落落键自身失败也计数）
+				try {
+					ctx.logger?.warn?.(
+						"[living-memory] compaction counter fallback write failed (#" +
+							stats.compactionBridgeErrors +
+							"): " +
+							String(eF).slice(0, 60),
+					);
+				} catch {}
+				return false;
+			}
+		};
+		// ── organ_meta 生命周期：按会话展开的计数键清理（2026-09-12 三车·裁 4＋3b）──────────────
+		//    病根：`compaction_count.<sid>` **按会话展开**且写入后**永无回收面** ⇒ organ_meta 只增不减；
+		//          同族的进程内 `compactionBySid` 有 2h sweep，持久面却是永久（B 路 D4／B-I3「2h 有界变永久」）。
+		//    **安全性论证（本刀的核心·勿删此段）**：`nextCompactionN` 是**三源取大**
+		//          （进程内 Map／本键／**库内既有锚条数** `anchorCountOf`）⇒ 本键本质是
+		//          「免全表 COUNT 的**加速缓存**」，**删过期键不会致序数重号**（第三源兜住）。
+		//    判据：保留「近 N 天仍有记忆写入的会话」（以 `memories.source='session:<sid>'` 的 ts 为准），
+		//          其余 `compaction_count.*` 键删除。**不动** `compactionBySid` 的 sweep（进程内 2h 面·另一轴）。
+		//    出口（⑬）：删失败有计数 + warn，不静默。
+		const pruneOrganMeta = (days) => {
+			const _d = Number(days) > 0 ? Number(days) : 7;
+			// D2 修（审计 A 路·2026-09-12）：**时间口径对齐**——原 cut 用 `toISOString()`（UTC `Z`、
+			//   含秒毫秒），而 `memories.ts` 经 nowIso() 写成 `+08:00` 到分钟（真库样本
+			//   `2026-09-12T07:45+08:00`）⇒ 二者**字符串比较跨时区错位**（实测同分钟边界判窗外·
+			//   窗实为 7d+8h·方向保守）。改为与 nowIso **同形**（本地时区到分钟 + `+08:00`）。
+			//   ⚠ 本机时区固定 +08:00；若迁移时区，此处与 nowIso 须**同改**（否则同病复发）。
+			const _cutD = new Date(Date.now() - _d * 86400000 + 8 * 3600 * 1000);
+			const _p2 = (x) => String(x).padStart(2, "0");
+			const cut =
+				_cutD.getUTCFullYear() + "-" + _p2(_cutD.getUTCMonth() + 1) + "-" + _p2(_cutD.getUTCDate()) +
+				"T" + _p2(_cutD.getUTCHours()) + ":" + _p2(_cutD.getUTCMinutes()) + "+08:00";
+			try {
+				const r = db
+					.prepare(
+						//    **两源并集**：会话记忆 `session:<sid>`（前缀 8 字符）**∪** 锚条 `auto:<sid>`
+						//    （前缀 5 字符）——只看前者会误删「只产锚条、未写普通记忆」会话的计数键
+						//    （虽有三源兜底不致重号，但白丢加速缓存）。
+						// AUDIT-FIX-20260912（修复车·审计 C 路第 5 项配套·**三态保信息闸**）：原判据只看
+						//   memories 的时间窗，而「锚条 INSERT 失败」时库内无 `auto:<sid>` 锚条 ⇒ 该键会被当
+						//   冗余缓存清掉，可它此刻**正是唯一事实源**（第三源＝锚条数已失效）⇒ 重号窗口。
+						//   三态：①**孤儿键**（库内该 sid 零痕迹——连 session:/auto: 都没有）⇒ 真清（否则本刀要治的
+		//   「只增不减」被重新打开）；②有痕迹且 `键值 <= 锚条数` ⇒ 键确是冗余缓存（第三源可兜）⇒ 清；
+		//   ③有痕迹且 `键值 > 锚条数` ⇒ **有锚条丢失** ⇒ 保留。
+		//   ⚠ **措辞订正（审计 A 路 D3·2026-09-12）**：①态**不属「保信息」面**——它是**有意清理**，安全性
+		//   依据是「零痕迹 ⇒ 零锚条 ⇒ anchorCountOf=0 ⇒ 下一号自 1 起、无并存」，而非「该键不会被清」。
+		//   **已知边界（诚实账）**：若外部删除或备份镜像回灌后旧锚条复现，重置序号会与旧锚条重号；
+		//   该形态无现成触发路径，登记为边界而非缺陷。
+						//   ⚠ 首版只写「②③」（缺 ① 逃逸体）⇒ **孤儿键永不可清**（drill 全量重跑当场抓红·
+						//     修复车自伤第二例）——这正是「修毕必再跑一轮」的实证依据。
+						"DELETE FROM organ_meta WHERE k LIKE 'compaction_count.%' " +
+							"AND substr(k, 18) NOT IN (" +
+							"SELECT substr(source, 9) FROM memories WHERE source LIKE 'session:%' AND ts >= ? " +
+							"UNION SELECT substr(source, 6) FROM memories WHERE source LIKE 'auto:%' AND ts >= ?) " +
+							"AND (NOT EXISTS (SELECT 1 FROM memories WHERE source = 'session:' || substr(k, 18) " +
+							"OR source = 'auto:' || substr(k, 18)) " +
+							"OR CAST(v AS INTEGER) <= (SELECT COUNT(*) FROM memories " +
+							"WHERE source = 'auto:' || substr(k, 18) AND title LIKE '上下文压缩锚%'))",
+					)
+					.run(cut, cut);
+				const n = Number(r && r.changes) || 0;
+				stats.organMetaPruned = (stats.organMetaPruned || 0) + n;
+				return n;
+			} catch (eP) {
+				stats.organMetaPruneErrors = (stats.organMetaPruneErrors || 0) + 1; // ⑬ catch 必须有出口
+				ctx.logger?.warn?.(
+					"[living-memory] organ_meta prune failed (#" +
+						stats.organMetaPruneErrors +
+						"): " +
+						String(eP && eP.message ? eP.message : eP).slice(0, 80),
+				);
+				return 0;
+			}
 		};
 		// ── 信号队列（wave）：graph-memory gm_signals 表意——提炼候选优先触发器（三真信号·40 帽）
 		let signalQ = []; // {type, at, hint}
 		const episodicRate = new Map(); // sessionId -> { turns, at }——read_episodic 轻频控（补件④：每窗 4 真用户轮 1 次）
-		const INBOX_RE = /模块[/\\][^/\\"]+[/\\]inbox[/\\]|\/inbox\/|inbox\/2026-/; // inbox路径 pattern（读inbox动作识别）
-		const M_EXEMPT_RE =
-			/^(继续|同意|好|嗯|行|可以|OK|ok|wrap-up|重启好了|多谢|谢谢|收到|是|对)\s*[。.!！~～]?$/; // option豁免短令词表（单源——user/message 留档与 turn/end 判定两用·F2-4 一源两用同法）
+		const INBOX_RE = CRIT.inboxPath; // inbox路径 pattern 已外置（2026-09-12 一车·读inbox动作识别）
+		const M_EXEMPT_RE = CRIT.exemptShort; // option豁免短令词表已外置（单源——user/message 留档与 turn/end 判定两用·2026-09-12 一车）
 		// ── 3 天窗刀（design-approved「按推荐」）：option nudge 两率持久化——观测窗 7→3 天·打戳即 SQL 原子自增 organ_meta（跨重启累计·v+1 型 UPSERT 免竞态·a25Flush 锁竞争教训同防）──
 		const bumpNudgeTotal = (k) => {
 			try {
@@ -4296,7 +4527,7 @@ module.exports = {
 									at: Date.now(),
 									hint: String(name).slice(0, 60),
 								});
-							if (/task_completed|收官|wrap-up/.test(argStr) && name !== "memory")
+							if (CRIT.taskCompleted.test(argStr) && name !== "memory") // 完成信号词表已外置（2026-09-12 一车）
 								signalQ.push({
 									type: "task_completed",
 									at: Date.now(),
@@ -4411,9 +4642,9 @@ module.exports = {
 							bumpNudgeTotal("nudge_shown_total"); // 3 天窗刀：展示打戳即持久化
 						}
 						ctx.logger?.warn?.(
-							"[living-memory] option观测[" +
+							"[living-memory] 方案观测[" +
 								bindSid.slice(0, 12) +
-								"]：轮内directive未先查living memory——记忆先行提示（观测级·不拦截）",
+								"]：轮内指令未先查记忆库——记忆先行提示（观测级·不拦截）",
 						);
 					}
 				}
@@ -4578,11 +4809,17 @@ module.exports = {
 				t === "compaction/end" &&
 				!(event.data && event.data.error)
 			) {
+				// AUDIT-FIX-20260912（修复车·审计 C 路第 5 项）：**锚条入册失败时的序数事实源兜底**——
+				//   cSid2B/cNB 在 try 外声明，供 catch(eB) 回落落键（块级 const 在 catch 不可见）。
+				let cSid2B = null,
+					cNB = 0;
 				try {
 					const cSid2 =
 						session && typeof session.id === "string" ? session.id : null;
 					if (cSid2) {
 						const n = nextCompactionN(cSid2); // 09-11：持久计数（原 `(compactionBySid.get(...)||0)+1` 单源 ⇒ 重启归零同名漂移）
+						cSid2B = cSid2; // AUDIT-FIX-20260912（C 路第 5 项）：登记供 catch(eB) 回落落键
+						cNB = n;
 						compactionBySid.set(cSid2, n);
 						stats.compactionSeen = (stats.compactionSeen || 0) + 1;
 						// 刀②：检查点锚条入册——被压段经此锚 read_episodic 回流（step通道·source=auto:<sid> 现成）
@@ -4656,6 +4893,9 @@ module.exports = {
 								String(eB).slice(0, 60),
 						);
 					} catch {}
+					// AUDIT-FIX-20260912（修复车·审计 C 路第 5 项）：**回落落键**（函数体见
+					//   fallbackWriteCompactionN·与之配套的 prune 侧「保信息闸」见 pruneOrganMeta）。
+					fallbackWriteCompactionN(cSid2B, cNB);
 				}
 			}
 			if (t === "turn/end") sweepExpiredAccounts(); // 8-31 修复④：过期扫挂真事件每轮尾（原幻事件整段死码——防 Map 无界+过期账清算+落盘恢复在产）
@@ -4819,8 +5059,7 @@ module.exports = {
 						// 语义信号不足）②bm25 归一≥0.18 ③token 交叠主门（**无条件**·query×title ≥2 token——治
 						// 「常见词强命中」：bm25 0.86 的「无效查询」单 token 命中被此门挡）。中文 2 字核心词天然 1 bigram
 						// 交叠会被误挡（召回代价·宁缺毋滥口径·观察一周再议降阈）。
-						const intentRe =
-							/[0-9一二三四五六七八九十]{1,4}\s*(月|日|号|点|时|次|条|个|d|h|分)|最近|今天|昨天|上周|上月|之前|之前那|上次|昨天那|刚才|进度|状态|报(告|表)|怎么|如何|什么|哪|谁|是否|还|继续|接(手|续|令|着)|查|找|搜|看|列|盘|总|结|汇|对比|差异|回(顾|顾下|执)|复(盘|跑|核)|待办|进行|在办|完成|毕|验收|呈|批|裁|令|案|刀|车|窗|库|表|面板|通道|插件|模型|参数|配置|路径|版本|行号|文件|目录|备份|快照|回归|演练|审计|nightly patrol|living memory|记忆|检索|注入|提炼|写入|召回|分词|词表|权限|红线|hard rule|纪律|space|模块|工程|施工|发车|重启|挂载|\b(?:\d+\s*(?:d|h|days?|hrs?|hours?|weeks?|months?|times?)|yesterday|today|tomorrow|recently|latest|last\s+(?:week|month|time|night|session)|ago|when)\b|\b(?:status|progress|pending|todo|done|complete[dt]?|finish(?:ed)?|verified?|audit(?:ed)?|review(?:ed)?|recap|summary)\b|\b(?:how|what|where|which|who|why|whose|whom)\b|\b(?:continue|resume|restart|find|search|look(?:up)?|list|show|check|compare|diff|track)\b|\b(?:memory|memories|recall|retriev\w*|inject\w*|extract\w*|index|schema|config\w*|plugin|model|version|backup|snapshot|patrol|nightly|session|window|panel|channel|permission|threshold)\b/i; // 0.2.0 首发：英文意图分支追加（四段：时间/状态/疑问/动作+域词·全 \b 边界防子串误命中·i flag 治句首大写·中文分支零变）——英文短 query 自动召回高精门不再静默全拒
+						const intentRe = CRIT.intentGate; // 意图门词表已外置（criteria-rules.default.json·2026-09-12 一车）
 						const hasIntent = intentRe.test(query);
 						if (query.length < 10 && !hasIntent) {
 							autoRecallCache.set(key, { query, at: Date.now(), text: "" });
@@ -4994,7 +5233,7 @@ module.exports = {
 							} catch {}
 						}
 						let text = picked.length
-							? "## living memory自动召回（⚠ 参考级·非directive·与最新directive相关记忆，引用前以当轮实况与directive source of record核对）\n" +
+							? "## 记忆库自动召回（⚠ 参考级·与最新记忆相关，引用前以当轮实况与正本核对）\n" +
 								picked
 									.map(
 										(r) =>
@@ -5055,7 +5294,7 @@ module.exports = {
 									.get(stitchSpace, cutIso);
 								if (last && !pickedIds.has(last.id)) {
 									text +=
-										(text ? "\n" : "## living memory自动召回（⚠ 参考级·非directive）\n") +
+										(text ? "\n" : "## 记忆库自动召回（⚠ 参考级）\n") +
 										"🪡 上窗衔接：" +
 										String(last.title).slice(0, 60) +
 										"（" +
@@ -5154,14 +5393,17 @@ module.exports = {
 							"ALTER TABLE conflicts ADD COLUMN merged_count INTEGER DEFAULT 1",
 						);
 					} catch {}
-					const CRIT_RE = /policy|charter|constitution|bylaw|directive/i; // foundational-document words — escalates a conflict report
+					// AUDIT-FIX-20260912（修复车·审计 C 路第 1 项真漏项）：冲突升级词并入三级链第 11 键
+					//   `sentryCritical`（实测第 11 键）——原字面量含魂律令词且被净化链重写为 /policy|charter|…/i（未披露·
+					//   flags 亦被改）⇒ 外置后 code 面零机改，公开面词表在 CRITERIA_PUBLIC 显式登记。
+					const CRIT_RE = CRIT.sentryCritical; // 重大项词——sentry report升级标（三级链第 11 键）
 					const insC = db.prepare(
 						"INSERT INTO conflicts (new_id, old_id, basis, evidence, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
 					);
 					const seenC = new Map();
 					// 8-31 锈面修（审计片6①b）：handover note/light sentry警报类历史条与当夜条 family 判据夜夜流水立单（L5 幂等只锁当日）——
 					//    扩为「同题族已裁决/未决已立案即不重立」：警报族（标题前缀族）任一成员已入 conflicts（任意状态）则整族不再立单。
-					const ALERT_FAM_RE = /^(handover note警报|记忆链路light sentry警报)/;
+					const ALERT_FAM_RE = CRIT.alertFamily; // 警报族前缀已外置（公开版显式 2 分支＝有意裁剪·见方案 §3.4）
 					const alertFamFiled = new Map(); // 族名 → 是否已立案（本巡缓存·一族一查）
 					const alertFamOf = (t) => {
 						const m = String(t || "").match(ALERT_FAM_RE);
@@ -5177,7 +5419,7 @@ module.exports = {
 					};
 					// ── 七小件⑤：系统自动条同题族豁免闸（09-08 maintainer·conflicts 313 案 85%=三类自动条互撞噪声）──
 					//    豁免面=「两侧均系统自动条」的互撞立案；自动条 vs 手写条真冲突仍立（勿step切）。
-					const SYS_AUTO_RE = /^(上下文压缩锚|handover note警报|Auto-Dreamer 语义簇)/;
+					const SYS_AUTO_RE = CRIT.sysAutoPrefix; // 系统自动条前缀已外置（2026-09-12 一车）
 					const sysAutoOf = (t) => SYS_AUTO_RE.test(String(t || ""));
 					// ── 七小件⑥：同题 pending 并案制（O(n²)→O(n)·schema 取加列 merged_count 案）──
 					const prefixKeyOf = (t) => {
@@ -5250,7 +5492,7 @@ module.exports = {
 						const key = r.type + "\u0000" + r.title;
 						if (seenC.has(key)) {
 							const old = seenC.get(key);
-							// A11 幂等（2026-08-26 修法包·wave 审计根因）：exact 段补 dup 查询——防每轮nightly patrol对同对重复条目重复立 pending（50/53 双立实证）
+							// 幂等（2026-08-26 修法包·wave 审计根因）：exact 段补 dup 查询——防每轮nightly patrol对同对重复条目重复立 pending（50/53 双立实证）
 							// E3 快治（design-approved·brain亲验定性）：①无序对查重（两值同交——病序老行 [如 52 号 (2580,2773) 旧序] 穿透新序查重落空=今夜重立根因）②AND status='pending'——已裁决（approved/resolved）同对不再重立（流水型警报根治）
 							const dupX = db
 								.prepare(
@@ -5267,7 +5509,7 @@ module.exports = {
 									r.space,
 									r.title,
 									nowIso(),
-								); // A15（2026-08-26 修法包）：两参对调——rows 按 id DESC·先见=更新条=保留方装 new_id·后见=更旧条=被合方装 old_id（原颠倒会致 approved 执行面反向合并保旧弃新）
+								); // （2026-08-26 修法包）：两参对调——rows 按 id DESC·先见=更新条=保留方装 new_id·后见=更旧条=被合方装 old_id（原颠倒会致 approved 执行面反向合并保旧弃新）
 						} else seenC.set(key, r);
 					}
 					// family 判定（同 type+space 桶·标题 bigram jaccard≥0.5）：评测评族口径同源——只记 pending 不并
@@ -5301,7 +5543,7 @@ module.exports = {
 								const nid = Math.max(grams[i].id, grams[j].id),
 									oid = Math.min(grams[i].id, grams[j].id);
 								// 8-31 锈面修（审计片6①a）：E3 resolved 幂等声明与码不符——已裁决（resolved/approved/executed）对每夜重立流水单。
-								//    立案前查重补「已裁决对不重立」：对齐 exact 判据 L1564 的 A11 无序对查重（病序老行穿透防护同法）·status 不限（pending 未决豁免保留+裁决终态亦不重立）。
+								//    立案前查重补「已裁决对不重立」：对齐 exact 判据 L1564 的 无序对查重（病序老行穿透防护同法）·status 不限（pending 未决豁免保留+裁决终态亦不重立）。
 								const dup = db
 									.prepare(
 										"SELECT COUNT(*) c FROM conflicts WHERE new_id IN (?, ?) AND old_id IN (?, ?) AND new_id != old_id",
@@ -5570,7 +5812,7 @@ module.exports = {
 						)
 						.get().c;
 					// ── wave AUDN 预裁段（pending 且未裁·预算帽 40/巡·LEGION_PRECLASSIFY_OFF 回退）：
-					//    只写 pre_* 建议列不动 status——maintainer终批才执行（A16 执行器主权不动）。
+					//    只写 pre_* 建议列不动 status——maintainer终批才执行（执行器主权不动）。
 					if (!process.env.LEGION_PRECLASSIFY_OFF) {
 						(async () => {
 							try {
@@ -6915,6 +7157,7 @@ module.exports = {
 						.get();
 					if (prev) patrolTotal = Number(JSON.parse(prev.v).total) || 0;
 				} catch {}
+				pruneOrganMeta(7); // 2026-09-12 三车（裁 4＋3b）：organ_meta 生命周期——清 7 天内无活动的会话计数键（删键不致病·三源取大兜住序数）
 				db.prepare(
 					"INSERT OR REPLACE INTO organ_meta (k, v) VALUES ('patrol_last', ?)",
 				).run(
@@ -7221,7 +7464,7 @@ module.exports = {
 						)
 							return {
 								error:
-									"as_of 格式非法（YYYY-MM-DD[THH:mm]·A14 同款闸）: " +
+									"as_of 格式非法（YYYY-MM-DD[THH:mm]·同款闸）: " +
 									asOfRaw.slice(0, 30),
 							};
 						if (asOfRaw) {
@@ -8349,7 +8592,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 						const heads = [];
 						for (let i = 0; i < lines.length; i++)
 							if (/^## /.test(lines[i])) heads.push(i);
-						// ── P1① 审计 A1 修（2026-08-29：440 锚实测 200 漂=45% 静默错窗——刀③每日顶部插入累积·锚行号只是初值·题才是身份）──
+						// ── P1① 审计 修（2026-08-29：440 锚实测 200 漂=45% 静默错窗——刀③每日顶部插入累积·锚行号只是初值·题才是身份）──
 						//    两段式：①锚行命中且题对→直接用 ②否则先精确题重定位（保留尾锚=dup 族唯一键）③再规格化题兜底④全失才报漂移。
 						const evPrefix =
 							/^## 20\d{2}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*\[\w+\]\s*/;
@@ -8505,7 +8748,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 						)
 							return {
 								error:
-									"as_of 格式非法（YYYY-MM-DD[THH:mm]·A14 同款闸）: " +
+									"as_of 格式非法（YYYY-MM-DD[THH:mm]·同款闸）: " +
 									asOfTl.slice(0, 30),
 							};
 						const tlWin = asOfTl
@@ -8708,6 +8951,8 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							compactionChaseRuns: stats.compactionChaseRuns || 0, // 刀① start 压缩前清算发起数
 							compactionChaseErrors: stats.compactionChaseErrors || 0,
 							compactionBridgeErrors: stats.compactionBridgeErrors || 0,
+							organMetaPruned: stats.organMetaPruned || 0, // 三车：organ_meta 过期计数键清理数（四点接线·⑬）
+							organMetaPruneErrors: stats.organMetaPruneErrors || 0, // AUDIT-FIX（A-D3）：错误侧补透出（原只自增+warn）
 							// ── 09-03 P0 修复车十键透出（⑬ 纪律：计数不可见=半合规同型病·自立法不自犯）──
 							entityExtractErrors: stats.entityExtractErrors || 0, // entity 段失败（原型链闸后仍兜底）
 							g2ArchiveErrors: stats.g2ArchiveErrors || 0, // G2 归档失败（主卷不覆写保护在役）
