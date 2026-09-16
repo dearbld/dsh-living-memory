@@ -9272,6 +9272,455 @@ module.exports = {
 				);
 			}
 
+			// ── 刀 2 补件（2026-08-22 三裁task brief §三.2）：nightly patrol批量补嵌——白昼新增条目夜间补齐向量 ──
+			//    复用 vecRecallCore 的嵌入链路但独立跑（不依赖查询触发）；失败仅 warn 不阻塞nightly patrol。
+			//    （nightPatrol 非 async——IIFE 包裹异步段，不侵入函数签名）
+			(async () => {
+				let _bfMissing = 0,
+					_bfFilled = 0,
+					_bfErr = null, // 09-12 审计 D1：段级可见面（供 finally 无条件落账）
+					_bfBudget = 0,
+					_bfOff = false, // D3：预算 0＝显式关闭（落账带 off 标·防与「全库补齐完毕」同形假绿）
+					_bfPoolA = 0,
+					_bfPoolB = 0,
+					_bfTake = 0,
+					_bfTakeA = 0,
+					_bfTakeB = 0,
+					_bfFilledA = 0,
+					_bfFilledB = 0,
+					_bfSkipped = 0,
+					_bfHashFilled = 0; // 09-12 C 项辅案：预算/双池/分批各自可见面
+				try {
+					vecBackfillRuns += 1; // 09-12 可见化：本段真跑到的凭证
+					// ── C 项辅案（design-approved「立即落码」）：预算化产能 ＋ 双池配额 7:3 ──
+					//    为什么（实测·非推演）：原单批 `LIMIT 200` ＋ 单池排序 ⇒ ①active 缺口 586 条须 3 巡以上；
+					//    ②**陈旧族 436 条在缺向量族清空前永远排不进 200 名**（按原口径复算：候选池 200 条 100% 为缺向量族）。
+					//    设计：①预算 `LEGION_VEC_BF_BUDGET`（缺省 600·钳制 0..2000·0=显式关闭，仅跳过扫描与嵌入不跳过落账）
+					//    ②双池按 7:3 配额 ＋ 余量互补（某池不足让给另一池）③嵌入按 100 条/批推进（批间可中断·部分成功留账）。
+					//    D5（09-12 独立审计处置）：解析**严格化**——非法/越界值回落缺省并 warn
+					//    （原 `Number.parseInt` 宽容解析致 `"-5"`/`"0x10"` 静默塌 0＝关闭、`"1e3"` 静默塌 1——与作者意图相反却不报错）
+					const bfBudget = (() => {
+						const raw = process.env.LEGION_VEC_BF_BUDGET;
+						if (raw === undefined || raw === "") return 600;
+						const n = Number(raw);
+						if (!Number.isInteger(n) || n < 0 || n > 2000) {
+							ctx.logger?.warn?.(
+								`[living-memory] LEGION_VEC_BF_BUDGET 非法值「${String(raw).slice(0, 24)}」⇒ 回落缺省 600（合法面＝整数 0..2000）`,
+							);
+							return 600;
+						}
+						return n;
+					})();
+					_bfBudget = bfBudget;
+					_bfOff = bfBudget <= 0 || process.env.LEGION_VEC_ON !== "1"; // D3：0＝显式关闭；option车闸4：VEC_ON 缺省关 ⇒ backfill 同停（off 标落账·置 "1" 开时自愈续跑）——审计 P0 订正：_bfOff 须被下方控制流消费（if (!_bfOff)）方真拦路
+					const md5txt = (t) =>
+						crypto
+							.createHash("md5")
+							.update(String(t).slice(0, 1500))
+							.digest("hex");
+					const backfillHash = db.prepare(
+						"UPDATE memories_vec SET content_hash=? WHERE id=? AND (content_hash IS NULL OR content_hash='')",
+					);
+					// ① 零 API：hash 回填（全库口径·原只覆盖候选 200 条）——**移出预算闸**（零 API 零风险·D5 审计处置）
+					//    独立审计**订正原注释因果**（原写「池 B 判定依赖它先完成，否则 hash 空行被误判陈旧」＝说反）：
+					//    池 B 并不依赖它——池 B 的 `r.vh &&` 已短路排除 hash 空行；它的真实效果＝按**当前内容**盖戳
+					//    ⇒ 这些行此后不再进池 B（其旧向量若对应旧内容＝永久隐身·与 hash-backfill.cjs 同款**已知取舍**·记录不修）
+					for (const r of db
+						.prepare(
+							`SELECT m.id AS id, m.title || ' ' || m.content AS txt FROM memories m JOIN memories_vec v ON v.id = m.id AND v.model_version = ? WHERE m.status='active' AND (v.content_hash IS NULL OR v.content_hash='')`,
+						)
+						.all(VEC_MODEL)) {
+						backfillHash.run(md5txt(r.txt), r.id);
+						_bfHashFilled += 1;
+					}
+					if (_bfHashFilled > 0)
+						ctx.logger?.info?.(
+							`[living-memory] vec hash backfill: ${_bfHashFilled} rows (zero-API)`,
+						);
+					if (bfBudget > 0 && !_bfOff) { // 审计 P0 修：_bfOff（预算0 ∨ VEC_ON 关）为**真闸**——原仅 bfBudget>0 消费·VEC_ON 关态仍真调嵌入 API（/tmp/audit-rev2 实证 stub=2）
+						// ② 池 A：缺向量（ORDER BY id DESC＝新条优先·原 v2「防新条目饿死」本意保留）
+						const poolA = db
+							.prepare(
+								`SELECT m.id AS id, m.title || ' ' || m.content AS txt FROM memories m LEFT JOIN memories_vec v ON v.id = m.id AND v.model_version = ? WHERE m.status='active' AND v.id IS NULL ORDER BY m.id DESC`,
+							)
+							.all(VEC_MODEL);
+						// ③ 池 B：有向量但内容已变（hash 不符）——md5 无 SQL 内建 ⇒ JS 侧全量扫描（active 6k 条·百 ms 级·每巡一次）
+						//    ⚠ 判据与写入端**同函数同口径**（md5txt·String().slice(0,1500)）⇒ 重嵌后必收敛，不会每巡重复补
+						//    ⚠ 规模阈值（诚实记账）：active **5 万条以上**时本全量扫描须改「分段轮转」（现口径每巡一次·内存峰值≈库文本量级）
+						const staleB = db
+							.prepare(
+								`SELECT m.id AS id, m.title || ' ' || m.content AS txt, v.content_hash AS vh FROM memories m JOIN memories_vec v ON v.id = m.id AND v.model_version = ? WHERE m.status='active'`,
+							)
+							.all(VEC_MODEL)
+							.filter((r) => r.vh && r.vh !== md5txt(r.txt))
+							.sort((a, b) => b.id - a.id);
+						_bfPoolA = poolA.length;
+						_bfPoolB = staleB.length;
+						_bfMissing = poolA.length + staleB.length; // 本巡候选总数（missing 口径后继：双池合计）
+						// ④ 配额 7:3 ＋ 余量互补（某池不足时让给另一池）
+						const quotaA = Math.ceil(bfBudget * 0.7);
+						let takeA = poolA.slice(0, quotaA);
+						let takeB = staleB.slice(0, bfBudget - quotaA);
+						let bfRemain = bfBudget - takeA.length - takeB.length;
+						if (bfRemain > 0 && takeA.length < poolA.length) {
+							const add = Math.min(bfRemain, poolA.length - takeA.length);
+							takeA = poolA.slice(0, takeA.length + add);
+							bfRemain -= add;
+						}
+						if (bfRemain > 0 && takeB.length < staleB.length)
+							takeB = staleB.slice(
+								0,
+								takeB.length + Math.min(bfRemain, staleB.length - takeB.length),
+							);
+						const targets = [
+							...takeA.map((r) => ({ id: r.id, txt: r.txt })),
+							...takeB.map((r) => ({ id: r.id, txt: r.txt })),
+						]; // 审计 P3③：_p 字段已死（池循环改用 pool.tag）——删除
+						_bfTake = targets.length;
+						_bfTakeA = takeA.length;
+						_bfTakeB = takeB.length;
+						if (targets.length > 0) {
+							const c = await credentials.resolve("EMBEDDING_BAILIAN_KEY");
+							if (c && c.value) {
+								vecCredCache = { v: c.value, t: Date.now() };
+								const ins = db.prepare(
+									"INSERT OR REPLACE INTO memories_vec (id, embedding, model_version, content_hash) VALUES (?, ?, ?, ?)",
+								);
+								const BF_BATCH = 100; // 批大小：embedOnce 内 10 条/请求 ⇒ 10 请求/批
+								// option车④·C1 分池容错（2026-09-14）：A/B 池**独立跑独立 try**——单池超时/故障不连坐另一池·失败可续（次夜接余量）；池级超时省略（embedOnce 内建每请求超时·批循环天然中断点）
+								for (const pool of [
+									{ list: takeA, tag: "A" },
+									{ list: takeB, tag: "B" },
+								]) {
+									if (!pool.list.length) continue;
+									try {
+										for (let off = 0; off < pool.list.length; off += BF_BATCH) {
+											const batch = pool.list.slice(off, off + BF_BATCH);
+											const embs = await embedOnce(
+												batch.map((r) => String(r.txt).slice(0, 1500)),
+											);
+											for (let i = 0; i < batch.length; i++) {
+												const e = embs[i];
+												if (!e) {
+													_bfSkipped += 1; // ⑬ 出口：批次返回不足（原码 f32ToBlob(undefined) 直接抛错·更粗）
+													continue;
+												}
+												ins.run(batch[i].id, f32ToBlob(e), VEC_MODEL, md5txt(batch[i].txt));
+												if (pool.tag === "A") _bfFilledA += 1;
+												else _bfFilledB += 1;
+											}
+										}
+									} catch (poolErr) {
+										// 池级隔离：记错不 rethrow——另一池续跑（09-14 夜实证：B 池 TimeoutError 连坐整段 fillB=0）
+										vecBackfillErrors += 1;
+										_bfErr = (_bfErr ? _bfErr + " ; " : "") + `[pool${pool.tag}] ${String(poolErr).slice(0, 100)}`; // 审计 P3④：追加式——双池皆败时两错并见（原后写覆盖只剩 B）
+										vecBackfillLastErr = _bfErr;
+										vecBackfillLastErrAt = nowIso();
+										ctx.logger?.warn?.(
+											`[living-memory] vec backfill pool${pool.tag} failed（另一池续·失败可续跑）: ${String(poolErr).slice(0, 80)}`,
+										);
+									}
+								}
+								ctx.logger?.info?.(
+									`[living-memory] vec backfill ok: ${_bfFilledA + _bfFilledB} entries (budget=${bfBudget}·pool A/B=${takeA.length}/${takeB.length}·filled A/B=${_bfFilledA}/${_bfFilledB}·hash ${_bfHashFilled})`,
+								); // D1 处置：本行只报数不作结算——`_bfFilled` 统一在 finally 结算（见下）
+							} else vecBackfillNoCred += 1; // ⑬ 出口（09-12 补）：原 if (c && c.value) 无 else——凭据空即静默跳过
+						}
+					} else
+						ctx.logger?.warn?.(
+							`[living-memory] vec backfill OFF (${_bfOff && bfBudget <= 0 ? "LEGION_VEC_BF_BUDGET=0" : "LEGION_VEC_ON 非 1〔含 query 档——写入/补嵌只认 1·09-16 小开案〕"}） —— 本巡不扫描不嵌入（落账带 off 标）`,
+						);
+				} catch (error) {
+					vecBackfillErrors += 1;
+					_bfErr = String(error).slice(0, 120); // 本巡失败摘要
+					vecBackfillLastErr = _bfErr; // 二轮审计 D1-d：最近失败跨巡保留（成功不清）
+					vecBackfillLastErrAt = nowIso();
+					ctx.logger?.warn?.(
+						`[living-memory] vec backfill failed: ${String(error).slice(0, 80)}`,
+					);
+				} finally {
+					// ── D1（09-12 独立审计·真缺陷）**结算移入 finally**：原 `_bfFilled` 只在整段循环跑完后赋值，
+					//    跨批中途抛错（如第 2 批 500）时前批已入库而 `filled` 落 0 ⇒ ①`filled = filledA + filledB` 不变量破裂
+					//    ②**恰答错核账分叉**：`filled=0 ∧ errorsTot>0` 会被判成「凭据/嵌入故障」，实为「已补 N 条后中断」──
+					_bfFilled = _bfFilledA + _bfFilledB; // 本巡成功数（部分成功也计入）
+					vecBackfillFilled += _bfFilled; // 累计成功补嵌条数（本巡结算一次·成功/失败路径同径）
+					// ── 09-12 审计 D1 修复：**无条件落账**（原只在成功路径 ⇒ 恰在故障时无凭据，与设计意图相反；
+					//    实证：force nightly patrol+断网 ⇒ runs=1/errors=1 而 vec_backfill_last 键不存在）──
+					//    字段：at（本巡时刻）/runs/missing（本巡候选数·故障时也能看「本可补多少」）/filled/noCred/errors/err（失败摘要）
+					try {
+						db.prepare(
+							"INSERT OR REPLACE INTO organ_meta (k, v) VALUES ('vec_backfill_last', ?)",
+						).run(
+							JSON.stringify({
+								at: nowIso(), // 本巡时刻
+								missing: _bfMissing, // 本巡候选总数（池 A ＋ 池 B）
+								filled: _bfFilled, // 本巡成功数
+								// ── C 项辅案（09-12 approved）可见面：故障/截断时也能判「是配额切了·还是产能不足·还是批次掉了」──
+								budget: _bfBudget,
+								off: _bfOff, // D3：`true`＝本巡被显式关闭 ⇒ **核账分叉不适用**（防「假绿位」）
+								done: !_bfOff && !_bfErr && _bfMissing === 0 && _bfTake === 0, // 8727-D2/D3 终闭＋审计 rev3 低危修：!_bfErr 防扫描抛错误绿（抛错时 missing/take 留初值 0 ⇒ 原 done=true 而「全库毕」未证实——err 在场可交叉辨识但 done 单看同形）
+								poolA: _bfPoolA,
+								poolB: _bfPoolB,
+								take: _bfTake,
+								takeA: _bfTakeA,
+								takeB: _bfTakeB,
+								filledA: _bfFilledA,
+								filledB: _bfFilledB,
+								skipped: _bfSkipped,
+								hashFilled: _bfHashFilled,
+								err: _bfErr, // 本巡失败摘要（null=本巡无失败）
+								// 二轮审计 D1-c：**累计口径显式带 Tot 后缀**（原 runs/noCred/errors 三键与本巡值同列易误读；
+								// 且「进程内累计·重启清零」——读账者不得据 runsTot 判「历史共跑几巡」）
+								runsTot: vecBackfillRuns,
+								noCredTot: vecBackfillNoCred,
+								errorsTot: vecBackfillErrors,
+								// 二轮审计 D1-d：跨巡保留的失败史（成功不清）
+								lastErr: vecBackfillLastErr,
+								lastErrAt: vecBackfillLastErrAt,
+							}),
+						);
+					} catch {
+						vecBackfillErrors += 1; // ⑬ 出口：落账失败也要可见
+					}
+				}
+			})();
+
+			// ── item nightly patrol回填（design-approved）：存量条目口语前缀批量生成——每巡 50 条新条优先 ──
+			//    （写时 fire-and-forget 只覆新写入；存量靠本段消化。失败跳过下巡再试——counter organ_meta
+			//    spoken_prefix_remain/spoken_prefix_filled 透出，remain 不降即人工介入。DeepSeek 通道·约 0.3 元/千条量级）
+			(async () => {
+				try {
+					if (process.env.LEGION_SPOKEN_OFF) return;
+					const spMissing = db
+						.prepare(
+							`SELECT id, title, content FROM memories WHERE status='active' AND spoken_prefix IS NULL ORDER BY id DESC LIMIT 50`,
+						)
+						.all();
+					if (spMissing.length > 0) {
+						const c = await credentials.resolve(LLM_KEY_REF);
+						if (c && c.value) {
+							spCredCache = { v: c.value, t: Date.now() };
+							const spUp = db.prepare(
+								"UPDATE memories SET spoken_prefix = ? WHERE id = ?",
+							);
+							let spFilled = 0;
+							for (const r of spMissing) {
+								try {
+									const sp = await llmSpokenPrefix(r.title, r.content);
+									if (sp) {
+										spUp.run(promptSafe(sp), r.id); // 审计处置车（09-13·D1c）：nightly patrol回填路同挂净化
+										spFilled++;
+									}
+								} catch {}
+							}
+							try {
+								db.prepare(
+									"INSERT OR REPLACE INTO organ_meta (k, v) VALUES ('spoken_prefix_fill', ?)",
+								).run(
+									JSON.stringify({
+										at: nowIso(),
+										filled: spFilled,
+										remain: spMissing.length - spFilled,
+									}),
+								);
+							} catch (eSW) {
+								stats.spokenFillWmErrors = (stats.spokenFillWmErrors || 0) + 1; // P2 fix（09-03 audit）：观测键写失败透出（原静默=透出面丢失·remain 不降判据失效）
+								ctx.logger?.warn?.(
+									"[living-memory] spoken_prefix_fill 观测键写失败(#" +
+										stats.spokenFillWmErrors +
+										"): " +
+										String(eSW).slice(0, 60),
+								);
+							}
+							ctx.logger?.info?.(
+								`[living-memory] spoken_prefix backfill: ${spFilled}/${spMissing.length} this patrol`,
+							);
+						}
+					}
+				} catch (error) {
+					ctx.logger?.warn?.(
+						`[living-memory] spoken_prefix backfill failed: ${String(error).slice(0, 80)}`,
+					);
+				}
+			})();
+
+			// ── D3（独立审计 09-12·**真缺陷**）观测位**末段补写** ──
+			//    病：E-4 赋值（本段，晚）与 E-5 赋值（stale 段，更早但仍晚于主写点）均**晚于 `patrol_last` 主写**
+			//    （7708-7736）⇒ 首巡必落 0、此后每巡写的是**上一巡值** —— 恰与本车「空转(0/0) 与 已死(不执行)可辨」
+			//    的目标冲突（首巡假 0/0 正是要消灭的同形假信号）。修＝nightly patrol末段按 7681-7695 既有补丁手法再写一次
+			//    （只更新观测键·`at`/`total`/主字段不动）。
+			try {
+				const plRow = db
+					.prepare("SELECT v FROM organ_meta WHERE k='patrol_last'")
+					.get();
+				if (plRow && plRow.v) {
+					const pl = JSON.parse(plRow.v);
+					pl.evoIns = stats.evoMirrorIns || 0;
+					pl.evoSkip = stats.evoMirrorSkip || 0;
+					pl.stalePoolNow = stats.stalePoolNow || 0;
+					pl.stalePoolT7 = stats.stalePoolT7 || 0;
+					pl.stalePoolT14 = stats.stalePoolT14 || 0;
+					pl.stalePoolT30 = stats.stalePoolT30 || 0;
+					pl.staleReviewPoolSize = stats.staleReviewPoolSize || 0; // E 主车：末段补写补齐（首巡不落 0·同 D3 手法）
+					pl.staleAutoRetired = stats.staleAutoRetired || 0;
+					pl.staleSinkSent = stats.staleSinkSent || 0;
+					pl.staleSinkBandwidth = stats.staleSinkBandwidth || 0;
+					pl.staleSinkErrors = stats.staleSinkErrors || 0; // 09-12 审计判据项④：错误出口同时入落账面（原只入 stats/render）
+					// 09-13 审计D4 治本（**独立键**·第三次订正）：等待信号须「只被末段补写推进」——
+					//   曾试 `patrol_last.at`（分钟精度撞车）→ `total`（属主写·只等于「开跑」）→ `pl.patchSeq`（**错**：主写每轮
+					//   构造全新对象 ⇒ 覆盖后此键恒 1）。正解＝写**独立键** `organ_meta.patrol_patch`（主写不碰 ⇒ 仅末段补写 +1·单调）。
+					pl.a10RotCursorErrors = stats.a10RotCursorErrors || 0; // F2：与 a10* 族同席（游标错可见于落账）
+					// ── C 挂哨（批 C 候办·09-15）：conflicts open item可观测——pending 案数＋最老龄（小时）──
+					//    治「conflicts 立案后无哨」：pending 长龄＝候裁积压可见（人工终裁主权的open item面·遥测/周报消费 patrol_last 即见）
+					try {
+						const _cRow = db
+							.prepare(
+								"SELECT COUNT(*) c, MIN(created_at) oldest FROM conflicts WHERE status = 'pending'",
+							)
+							.get();
+						pl.conflictsPending = _cRow.c || 0;
+						if (_cRow.oldest) {
+							const _oMs = Date.parse(
+								String(_cRow.oldest).slice(0, 16) + "+08:00",
+							);
+							pl.conflictsPendingOldestH = !isNaN(_oMs)
+								? Math.max(0, Math.floor((Date.now() - _oMs) / 3600000))
+								: -1;
+						} else pl.conflictsPendingOldestH = 0;
+					} catch {}
+					// ── 进化度量五键（09-16 三案·maintainer·进化体系补全案）：每晚落 patrol_last ──
+					//    治「进化只有账没有度量」——让「坑在变多么/教训真被用么/知识在流么」每晚可答（周报画曲线）。
+					//    口径（第一版全 SQL 化·fs 面二版）：①lessonRecidivismEdges=近7d 复犯链回边数（explicit/auto-link→活跃 lesson）
+					//    ②lessonCitationRate=近30d 被 search 命中 lesson 占比（last_hit_at=relevancy 结算写的条级命中史·%整数）
+					//    ③extractYieldRate=auto 提炼条被命中占比（%整数）④lessonCreationRate=近7d 新 lesson 占比（pinboard换血上游代理）
+					//    ⑤crossOrganEdges=跨空间边数（cross-space知识流库内代理·原案pinboard diff/上浮件数属 fs 面留二版）
+					try {
+						const _evIso = (msAgo) => {
+							const d = new Date(Date.now() + 8 * 3600 * 1000 - msAgo);
+							const p = (n) => String(n).padStart(2, "0");
+							return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}+08:00`;
+						};
+						const _cut7 = _evIso(7 * 86400000);
+						const _cut30 = _evIso(30 * 86400000);
+						const _act =
+							db.prepare(
+								"SELECT COUNT(*) c FROM memories WHERE type='lesson' AND status='active'",
+							).get().c || 0;
+						const _pct = (n, d) => (d > 0 ? Math.round((100 * n) / d) : 0);
+						pl.activeLessons = _act;
+						pl.lessonRecidivismEdges =
+							db.prepare(
+								"SELECT COUNT(*) c FROM memories_edges e JOIN memories m ON m.id = e.dst WHERE m.type = 'lesson' AND m.status = 'active' AND e.edge_type IN ('explicit','auto-link') AND e.valid_at >= ? AND e.invalid_at IS NULL",
+							).get().c || 0;
+						pl.lessonCitationRate = _pct(
+							db.prepare(
+								"SELECT COUNT(*) c FROM memories WHERE type='lesson' AND status='active' AND last_hit_at IS NOT NULL AND last_hit_at >= ?",
+							).get().c || 0,
+							_act,
+						);
+						const _autoTot =
+							db.prepare(
+								"SELECT COUNT(*) c FROM memories WHERE source LIKE 'auto:%' AND status='active'",
+							).get().c || 0;
+						pl.extractYieldRate = _pct(
+							db.prepare(
+								"SELECT COUNT(*) c FROM memories WHERE source LIKE 'auto:%' AND status='active' AND last_hit_at IS NOT NULL",
+							).get().c || 0,
+							_autoTot,
+						);
+						pl.lessonCreationRate = _pct(
+							db.prepare(
+								// 审计修×2（09-16）：①.get() 漏传 _cut7（SQL ? 无绑定⇒异常被 catch 吞⇒键 4 永不落值）
+								//   ②独立审计 P3 订正（09-16 夜）：真库 ts 系 T 形 96.7%（空格形仅 414 条 2026-08 历史遗留）——
+								//     双侧 replace 同形化恢复分钟精度（原单侧法把 T 形比较降日粒度·边界日多计≈0.54pp）
+								"SELECT COUNT(*) c FROM memories WHERE type='lesson' AND status='active' AND replace(ts, 'T', ' ') >= replace(?, 'T', ' ')",
+							)
+								.get(_cut7)
+								.c || 0,
+							_act,
+						);
+						pl.crossOrganEdges =
+							db.prepare(
+								"SELECT COUNT(*) c FROM memories_edges e JOIN memories a ON a.id = e.src JOIN memories b ON b.id = e.dst WHERE e.edge_type IN ('explicit','auto-link') AND e.invalid_at IS NULL AND a.space != b.space",
+							).get().c || 0;
+					} catch (eEV) {
+						stats.evoMetricErrors = (stats.evoMetricErrors || 0) + 1; // ⑬ 出口（独立审计 P2·09-16：afe2b82 引入空吞·曾实吞 RangeError 致键4 永不落值——治根给出口）
+					}
+					// ── cross-space同族聚合（09-16 三案·maintainer·进化体系补全案）：nightly patrol跨空间聚三路 ──
+					//    治四真缺口①「cross-space同族聚合层缺位」——同族坑cross-space重犯自动感知（行政链路外补记忆链路）。
+					//    三路：①复犯边（patches/solved_by）src 跨空间入度榜 ②title 头 6 字跨空间族（共现交叠全 SQL 近似）
+					//          ③族内词面同族（LIKE 通路并入族 SQL）→ patrol_last 三键（crossOrganLessonTop/crossOrganFamilies/crossOrganNew）
+					//          ＋注入行（注入段消费·非空才显零打扰）。错误计数 crossOrganErrors（⑬ 出口·注入行共用）。
+					try {
+						const _coTot =
+							db
+								.prepare(
+									"SELECT COUNT(DISTINCT m.id) c " +
+										"FROM memories_edges e JOIN memories m ON m.id = e.dst JOIN memories s ON s.id = e.src " +
+										"WHERE m.type = 'lesson' AND m.status = 'active' " +
+										"AND e.edge_type IN ('patches','solved_by') AND e.invalid_at IS NULL AND s.space != m.space",
+								)
+								.get().c || 0; // 真值（无帽）——注入行 N 用真值（独立审计改进②：top 帽 5 恒显 5 误导）
+						pl.crossOrganLessonTotal = _coTot;
+						const _coD = new Date(Date.now() + 8 * 3600 * 1000 - 7 * 86400000);
+						const _p2 = (n) => String(n).padStart(2, "0");
+						const _coCut =
+							_coD.getUTCFullYear() +
+							"-" +
+							_p2(_coD.getUTCMonth() + 1) +
+							"-" +
+							_p2(_coD.getUTCDate()); // ts 空格形·日粒度线（审计修②同形教训：T 形对空格形恒漏）
+						const _coTop = db
+							.prepare(
+								"SELECT m.id, m.title, m.space, COUNT(DISTINCT s.space) spaces, COUNT(*) deg " +
+									"FROM memories_edges e JOIN memories m ON m.id = e.dst JOIN memories s ON s.id = e.src " +
+									"WHERE m.type = 'lesson' AND m.status = 'active' " +
+									"AND e.edge_type IN ('patches','solved_by') AND e.invalid_at IS NULL AND s.space != m.space " +
+									"GROUP BY m.id ORDER BY deg DESC, m.id DESC LIMIT 5",
+							)
+							.all();
+						pl.crossOrganLessonTop = _coTop.map((r) => ({
+							id: r.id,
+							space: r.space,
+							deg: r.deg,
+							spaces: r.spaces,
+							title: String(r.title || "")
+								.replace(/[\r\n{}]/g, " ")
+								.slice(0, 40),
+						}));
+						const _coFam = db
+							.prepare(
+								"SELECT lower(substr(title, 1, 6)) head6, COUNT(*) members, COUNT(DISTINCT space) spaces, MAX(ts) lastTs " +
+									"FROM memories WHERE type = 'lesson' AND status = 'active' AND length(title) >= 6 " +
+									"GROUP BY head6 HAVING spaces >= 2 AND head6 != '' ORDER BY lastTs DESC",
+							)
+							.all();
+						pl.crossOrganFamilies = _coFam.length;
+						pl.crossOrganNew = _coFam.filter(
+							(r) => String(r.lastTs || "").slice(0, 10) >= _coCut,
+						).length;
+					} catch (eCO) {
+						stats.crossOrganErrors = (stats.crossOrganErrors || 0) + 1; // ⑬ 出口
+					}
+					// 末段补写完成戳（独立键·不进 patrol_last 主写面）：drill/运维可据此判定「本巡完整跑完」
+					try {
+						const _pp = db
+							.prepare("SELECT v FROM organ_meta WHERE k='patrol_patch'")
+							.get();
+						db.prepare(
+							"INSERT OR REPLACE INTO organ_meta (k, v) VALUES ('patrol_patch', ?)",
+						).run(String((Number(_pp && _pp.v) || 0) + 1));
+					} catch (ePP) {
+						stats.patrolLastPatchErrors = (stats.patrolLastPatchErrors || 0) + 1; // ⑬ 出口
+					}
+					db.prepare(
+						"INSERT OR REPLACE INTO organ_meta (k, v) VALUES ('patrol_last', ?)",
+					).run(JSON.stringify(pl));
+				}
+			} catch (ePL) {
+				stats.patrolLastPatchErrors = (stats.patrolLastPatchErrors || 0) + 1; // ⑬ 出口
+			}
+
 			// ── P0 同item：遥测周报常驻化（design-approved「同意」四点②）──
 			//    手跑转正：a companion script nightly patrol自动跑——7 天闸（organ_meta usage_weekly_last ISO 戳比对）；
 			//    回退开关 LEGION_USAGE_WEEKLY_OFF；沙箱演练态（LEGION_MODULE_SCAN_DIR 设）跳过——不触真库/真周报目录。
