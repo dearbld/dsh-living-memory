@@ -4,6 +4,12 @@
     "re": "^(handover note警报|记忆链路light sentry警报)",
     "flags": ""
   },
+  "closureAnchorStopwords": {
+    "re": "^(?:pending|retrospective|acceptance|space|receipt|reconcile|remediation|writeoff|write-off)$",
+    "flags": ""
+  },
+  "closureFreshDoneHours": 24,
+  "essentialAnchorSeatDays": 3,
   "exemptShort": {
     "re": "^(继续|同意|好|嗯|行|可以|OK|ok|多谢|谢谢|收到|是|对|continue|sure|yes|thanks|yep|nope)\\s*[。.!！~～]?$",
     "flags": ""
@@ -28,6 +34,7 @@
     "re": "已?(完成|办毕|办结|完结|wrap-up|更新|记录|说明|情况|事项|内容|工作|小结|汇总|总结|备忘|备注|处理|日常|杂项|其他|临时|测试|验证|整理|自查)",
     "flags": "g"
   },
+  "sameTopicOverlapMin": 3,
   "sentryCritical": {
     "re": "policy|charter|constitution|bylaw|directive",
     "flags": "i"
