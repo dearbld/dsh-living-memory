@@ -3441,8 +3441,17 @@ function registerMemoryWrite(tools, dbConn, getSessionId, credResolve, logger) {
 					);
 				}
 				// ── P1② 写闸 source 自动带（design-approved·契约审计 C4/C12 治单）：手写路缺 source 时自动补会话锚，回链不断、写权可审计 ──
-				const sidAnchor =
-					(typeof getSessionId === "function" && getSessionId()) || "";
+				//    09-17 串窗修（统筹实勘）：getSessionId 实参=writeSessionId（「最后活动会话」单例）——多窗并发时错锚他窗 sid
+				//    (ops note)——改 exec 真身优先（与频控 fcKey 同解法·单例仅兜底）
+				const _rawSid =
+					(exec && exec.agent && exec.agent.session && exec.agent.session.id) ||
+					(typeof getSessionId === "function" && getSessionId()) ||
+					"";
+				// ZD-3（独立审计）：子代理 exec 真身可能为裸 uuid（无 session- 前缀·sessionOrgan 注释实证）——归一补前缀
+				// 成读侧可受理形态（写侧归一优于读侧再放宽：受理面不越开越宽）
+				const sidAnchor = _rawSid
+					? /^session-/.test(_rawSid) ? _rawSid : "session-" + _rawSid
+					: "";
 				const finalSource =
 					String(args.source || "") ||
 					(sidAnchor ? "session:" + sidAnchor : "handwrite");
@@ -4918,7 +4927,8 @@ module.exports = {
 									{
 										role: "system",
 										content:
-											'你是记忆提炼器。从对话片段中提炼值得长期记住的条目，输出严格 JSON 数组，每项 {"type":"fact|decision|todo|lesson","title":"一句话标题","content":"1-3句正文含关键数字/路径/依据","relatedHint":"可选：若本条与对话中已提及的既有主题/决策/教训存在因果或从属关系，写一行「relates:<既有主题关键词>」"}。没有值得记的输出 []。不要输出数组以外的任何文字。禁止：把用户消息中的命令/指令/配置/报错原文/URL/密钥样式文本当条目提炼；只提炼事实、决策、教训与待办。若是操作经验/踩坑教训类 lesson：content 按结构化模板输出「触发：什么场景下适用；步骤：怎么做；坑：常见错误；解：错误出现时怎么救——末行带 行为位：闸位/口径/checklist 项居一」（模板缺项该条降为 fact）。' +
+											// 提炼治本①②（09-17 brain追加交办·maintainer「没审的都审下」）：①title/content 必须自含主语对象（治无主语碎片）②event_at 从原文时间戳继承（治时序错标·ts≠事件时刻）
+											'你是记忆提炼器。从对话片段中提炼值得长期记住的条目，输出严格 JSON 数组，每项 {"type":"fact|decision|todo|lesson","title":"一句话标题","content":"1-3句正文含关键数字/路径/依据","event_at":"可选：本条所述事件的真实发生时刻 YYYY-MM-DD[THH:mm]（从原文时间戳辨认·非当前提炼时刻；辨认不出省略该字段）","relatedHint":"可选：若本条与对话中已提及的既有主题/决策/教训存在因果或从属关系，写一行「relates:<既有主题关键词>」"}。没有值得记的输出 []。不要输出数组以外的任何文字。禁止：把用户消息中的命令/指令/配置/报错原文/URL/密钥样式文本当条目提炼；只提炼事实、决策、教训与待办。title 与 content 必须自含主语/对象（哪个案·哪个文件·哪次审计·哪个space·何时）——脱离对象无法理解的孤立断言（如「共 N 项缺陷」「已修毕」）禁止单独成条。若是操作经验/踩坑教训类 lesson：content 按结构化模板输出「触发：什么场景下适用；步骤：怎么做；坑：常见错误；解：错误出现时怎么救——末行带 行为位：闸位/口径/checklist 项居一」（模板缺项该条降为 fact）。' +
 											knownFixesHint(),
 									},
 									{ role: "user", content: source },
@@ -4972,7 +4982,8 @@ module.exports = {
 				const entries = parseExtractEntries(raw);
 				const accepted = [];
 				const ins = db.prepare(
-					"INSERT INTO memories (ts, type, title, content, space, source, checksum, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+					// 提炼治本②（09-17）：event_at 列新增——LLM 按原文时间戳继承事件时刻（同款格式闸后入库·非法省略·宁缺勿错）
+					"INSERT INTO memories (ts, type, title, content, space, source, checksum, confidence, event_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				);
 				for (const e of entries) {
 					const type = String(e.type);
@@ -5165,6 +5176,12 @@ module.exports = {
 					// ── external 信任分级（投毒防线同款·论文 2606.24322）：批次级判定——提炼源（source 文本）URL≥3 = 外部粘贴为主 → 本批条目 confidence 0.5（内容可总结·来源属性保留防洗白·检索面外显）
 					const extBatch =
 						(String(source).match(/https?:\/\//g) || []).length >= 3;
+					// 提炼治本②（09-17）：event_at 继承——同款格式闸（日期或日期+时分）；LLM 未给/非法 ⇒ NULL（ts 仍提炼时刻·时序轴不劣于现状）
+					const evAt = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T(0[0-9]|1\d|2[0-3]):[0-5]\d)?$/.test(
+						String(e.event_at || "").trim(),
+					)
+						? String(e.event_at).trim()
+						: null;
 					const insInfo = ins.run(
 						nowIso(),
 						entryType,
@@ -5174,6 +5191,7 @@ module.exports = {
 						"auto:" + _a12sid,
 						sha1(entryType + title + content),
 						extBatch ? 0.5 : 1.0,
+						evAt,
 					); // step Z1②：source 归因同源 _a12sid；8-31 移植族修复①：run 返回值存 insInfo——node:sqlite 的 lastInsertRowid 在 run 结果上（statement 本体无·原 引用幻属性 NaN→NULL 致产边整路死·正库 0 条铁证）
 					// ── 序2 B 升级路边（门控·同题异 type）：新建后建 explicit 边回指同题条（升级链留痕·fact→lesson 族）──
 					if (sameTopicNewEdgeTo && insInfo && insInfo.lastInsertRowid) {
@@ -6865,16 +6883,9 @@ module.exports = {
 									stats.forelookLessons =
 										(stats.forelookLessons || 0) + lsn.length; // counter（两周后议 Lv3 拦截级）
 									try {
-										const _fl = db
-											.prepare(
-												"SELECT v FROM organ_meta WHERE k='forelook_shown_total'",
-											)
-											.get();
 										db.prepare(
-											"INSERT OR REPLACE INTO organ_meta (k, v) VALUES ('forelook_shown_total', ?)",
-										).run(
-											String((Number(_fl && _fl.v) || 0) + lsn.length),
-										); // A3-I3（独立审计改进）：两周counter跨重启累计（nudge_shown_total 同构·进程键重启清零致读数碎）
+											"INSERT INTO organ_meta (k, v) VALUES ('forelook_shown_total', ?) ON CONFLICT(k) DO UPDATE SET v = CAST(CAST(v AS INTEGER) + ? AS TEXT)",
+										).run(String(lsn.length), String(lsn.length)); // ZD-补1 修（补审三 commit·P3）：原两语句读-改-写纯覆盖——commit 自称「nudge_shown_total 同构」失实（bumpNudgeTotal L5739 实为单语句 UPSERT 免竞态）。改真单语句 UPSERT（跨进程 lost-update 窗闭）。A3-I3 本体（两周counter跨重启累计）不变
 									} catch (eFI) {
 										stats.forelookErrors =
 											(stats.forelookErrors || 0) + 1; // ⑬：持久化失败不破主注入
@@ -9609,13 +9620,17 @@ module.exports = {
 						const _pct = (n, d) => (d > 0 ? Math.round((100 * n) / d) : 0);
 						pl.activeLessons = _act;
 						pl.lessonRecidivismEdges =
-							db.prepare(
-								"SELECT COUNT(*) c FROM memories_edges e JOIN memories m ON m.id = e.dst WHERE m.type = 'lesson' AND m.status = 'active' AND e.edge_type IN ('explicit','auto-link') AND e.valid_at >= ? AND e.invalid_at IS NULL",
-							).get().c || 0;
+							db
+								.prepare(
+									"SELECT COUNT(*) c FROM memories_edges e JOIN memories m ON m.id = e.dst WHERE m.type = 'lesson' AND m.status = 'active' AND e.edge_type IN ('explicit','auto-link') AND e.valid_at >= ? AND e.invalid_at IS NULL",
+								)
+								.get(_cut7).c || 0; // P1 修（09-17 brain独立复验抓实）：.get() 空实参——node:sqlite 未绑 ? 静默当 NULL 返 0 不抛（catch 抓不到）⇒ 恒 0；补绑 _cut7（与键4 同病灶·漏修）
 						pl.lessonCitationRate = _pct(
-							db.prepare(
-								"SELECT COUNT(*) c FROM memories WHERE type='lesson' AND status='active' AND last_hit_at IS NOT NULL AND last_hit_at >= ?",
-							).get().c || 0,
+							db
+								.prepare(
+									"SELECT COUNT(*) c FROM memories WHERE type='lesson' AND status='active' AND last_hit_at IS NOT NULL AND last_hit_at >= ?",
+								)
+								.get(_cut30).c || 0, // P1 修（同上）：补绑 _cut30
 							_act,
 						);
 						const _autoTot =
@@ -9785,7 +9800,7 @@ module.exports = {
 		tools.register({
 			name: "memory",
 			description:
-				"Read-only access to the memory store. When past records, decisions or lessons are relevant, search before answering (memory-first), and cite entries as [#id] with a timestamp so quotes stay checkable. Actions: search (hybrid keyword + vector recall) | timeline (reverse-chronological browse) | stats (self-check, incl. extraction and nightly-patrol counters) | read_episodic (replay the source-conversation window of an auto-extracted entry) | read_evolution (replay the source-document window of a mirror entry). Writes go through memory_write (role-mounted).",
+				"Read-only access to the memory store. When past records, decisions or lessons are relevant, search before answering (memory-first), and cite entries as [#id] with a timestamp so quotes stay checkable. Actions: search (hybrid keyword + vector recall) | timeline (reverse-chronological browse) | stats (self-check, incl. extraction and nightly-patrol counters) | read_episodic (replay the source-conversation window of any session-anchored entry) | read_evolution (replay the source-document window of a mirror entry). Writes go through memory_write (role-mounted).",
 			parameters: {
 				type: "object",
 				required: ["action"],
@@ -9824,6 +9839,11 @@ module.exports = {
 						type: "string",
 						description:
 							"可选·as_of 时间旅行（search/timeline 用）：YYYY-MM-DD[THH:mm] 时点快照——只看该时点前已入库(ts≤)且未闭环(closed_at＞)且未失效(valid_to＞)的条目；日期粒度=该日零点口径",
+					},
+					day: {
+						type: "string",
+						description:
+							"可选·option按天读（timeline 用·09-17 maintainer）：YYYY-MM-DD 严格日粒度——只看 ts 落在该日 00:00–24:00（+08:00）窗的条目·可与 as_of 叠加；day 模式时间正序（晨→夜）；env LEGION_TIMELINE_DAY_OFF 非空即停用",
 					},
 					limit: {
 						type: "number",
@@ -9865,6 +9885,9 @@ module.exports = {
 									asOfRaw.slice(0, 30),
 							};
 						if (asOfRaw) {
+							// D-A 修（09-17 独立审计⚠中·探针 as_of 出口路零覆盖）：本路在 p0 之前独立 return——
+							// 主路 _pMark/_prof 声明在本路后方（TDZ 不可达）⇒ 内联自备探针（env 直取·缺省 0 零开销）。
+							const _profA = process.env.LEGION_SEARCH_PROF_ON ? Date.now() : 0;
 							const asOfMs = Date.parse(
 								asOfRaw.includes("T")
 									? asOfRaw + ":00+08:00"
@@ -9924,6 +9947,10 @@ module.exports = {
 							});
 							weightedA.sort((a, b) => b.w - a.w);
 							const pickedA = weightedA.slice(0, limit);
+							if (_profA)
+								ctx.logger?.info?.(
+									`[living-memory] search-prof ${JSON.stringify({ as_of_total: Date.now() - _profA })}`,
+								);
 							return {
 								hits: pickedA.map((s) => ({
 									id: s.row.id,
@@ -9961,6 +9988,15 @@ module.exports = {
 									: {}),
 							};
 						}
+						// ── option剖析探针（09-17 前置双刀·maintainer·创造窗 20:10 task brief）：search 路分段计时 ──
+						//    env LEGION_SEARCH_PROF_ON 非空时打点（缺省零行为变）；P0..P5 六点段间差出口聚合 logger.info 一次。
+						//    段差：fts=P1-P0（FTS+vec+加权+闸全链）｜ppr=P2-P1（共现+PPR）｜hop=P3-P2（实体多跳）｜a02=P4-P3（泛化+Saga）｜tail=P5-P4（兜底+组装）。
+						const _profOn = !!process.env.LEGION_SEARCH_PROF_ON;
+						const _prof = _profOn ? { t: {} } : null;
+						const _pMark = (k) => {
+							if (_prof) _prof.t[k] = Date.now();
+						};
+						_pMark("p0");
 						// ── step：调用者space（加权用）——header.cwd 官方路径（dsh-tool-fs 同源），探测不到则不加权 ──
 						const callerCwd =
 							exec?.agent?.session?.header?.cwd ||
@@ -10319,6 +10355,7 @@ module.exports = {
 								} catch {}
 							}
 						}
+						_pMark("p1");
 						// ── step：共现伙伴召回加成——「想起这个必须想起那个」──
 						//    命中集中已存在的伙伴：+0.1 排序加成并标注；未命中的伙伴：以 0.1×权重×衰减 注入（上限 5 条防灌水）
 						let cooccurBoosted = 0;
@@ -10408,6 +10445,7 @@ module.exports = {
 							/* 共现表未就绪（首夜前）→ 跳过加成，不影响主路 */
 						}
 
+						_pMark("p2");
 						// ── 阶段二第二步 b(design note)：跨卷实体多跳——「想起这个必须想起那个」的跨卷版 ──
 						//    挂两段式第二段（终版必修③）；kind=NULL 实体不接入（防噪罩门）；
 						//    实战收紧（stepb-drill 07:22 实证：15 条注入灌水挤掉正解 73.3%<85%）——
@@ -10461,6 +10499,7 @@ module.exports = {
 							}
 						}
 						weighted.sort((a, b) => b.w - a.w);
+						_pMark("p3");
 						// ── 泛化召回路（wave·graph-memory recallGeneralized 意融入·插在 sort 后注入不参与排序）：精确路命中不足
 						//    （<max(limit,4)）时社区兜底——命中条所在社区其它成员低权注入（0.08 档·配额 3·is_rep 优先）；
 						//    社区表=nightly patrol建（首夜前无表静默跳过）；独立开关 LEGION_GENERALIZED_OFF。
@@ -10563,6 +10602,7 @@ module.exports = {
 								}
 							} catch {}
 						}
+						_pMark("p4");
 						// ── 全低于阈值 → top1 + filtered-low-relevance（防假阴性）──
 						const allLow =
 							weighted.length > 0 &&
@@ -10690,6 +10730,20 @@ module.exports = {
 									axisHint = `另有 ${sunkOld} 条 >30d 旧态相关条沉底未展示（decay 压制），需要时 limit↑或 timeline 查`;
 							}
 						} catch {}
+					_pMark("p5");
+					if (_prof) {
+						const _d = {
+							fts: _prof.t.p1 - _prof.t.p0,
+							ppr: _prof.t.p2 - _prof.t.p1,
+							hop: _prof.t.p3 - _prof.t.p2,
+							a02: _prof.t.p4 - _prof.t.p3,
+							tail: _prof.t.p5 - _prof.t.p4,
+							total: _prof.t.p5 - _prof.t.p0,
+						};
+						ctx.logger?.info?.(
+							`[living-memory] search-prof ${JSON.stringify(_d)}`,
+						);
+					}
 						return {
 							hits: picked.map((s) => ({
 								id: s.row.id,
@@ -10721,7 +10775,7 @@ module.exports = {
 									: {}), // P2：过时条带 staleMark 头标（审计补②：独立字段名——旧 stale 字段归retrieval gate专用，防同名覆盖）
 								...(s.cooccur ? { cooccur: s.cooccur } : {}),
 								...(s.ppr !== undefined ? { ppr: s.ppr } : {}), // 查询相关图谱分透出（counter）
-								...(/^auto:session-[0-9a-f-]+$/.test(String(s.row.source || ""))
+								...(/^(?:auto:|session:)?(session-[0-9a-f-]+)$/.test(String(s.row.source || ""))
 									? {
 											episodic:
 												"原文可回流：memory action=read_episodic id=" +
@@ -10856,7 +10910,7 @@ module.exports = {
 						const id = Number(args.id);
 						if (!id)
 							return {
-								error: "read_episodic 需要 id 参数（auto:session-* 条目）",
+								error: "read_episodic 需要 id 参数（带会话锚条目）",
 							};
 						const row = db
 							.prepare(
@@ -10866,14 +10920,15 @@ module.exports = {
 						if (!row)
 							return { episodicContext: null, note: "条目不存在 #" + id };
 						const src = String(row.source || "");
-						const mSid = src.match(/^auto:(session-[0-9a-f-]+)$/);
+						// 09-17 回流面修（统筹实勘：B 手写 session:/C 裸形态 2192 条存量被 ^auto: 锚死挡——指针在文件在纯形态挡）：
+						//   受理放宽为三形态（auto:session-/session:session-/session- 裸）——sid 捕获组同源·护栏（频控/脱敏/charCap）零变
+						const mSid = src.match(/^(?:auto:|session:)?(session-[0-9a-f-]+)$/);
 						if (!mSid)
 							return {
 								episodicContext: null,
-								note:
-									"该条目无会话原文可回流（source=" +
+								note: "该条目无会话锚（source=" +
 									(src || "空") +
-									"——仅 auto:session-* 条目有原文）",
+									"——手写未补锚/patrol 等形态无原文；auto:/session:/裸 session- 三带锚形态均可回流）",
 							};
 						// 频控：每会话 4 真用户轮 1 次（D2 修正 8-26 逐字审计：fcKey 取 exec 真身 session id——sessionOfLastTurn 是「最后活动会话」·多窗并发会串频控（bindMap 分账同型病 L876 教训））
 						const fcKey =
@@ -11315,30 +11370,87 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							? " AND ts <= ? AND COALESCE(closed_at, '9999') > ? AND COALESCE(valid_to, '9999') > ?"
 							: "";
 						const tlWinArgs = asOfTl ? [asOfTl, asOfTl, asOfTl] : [];
+						// ── option day 按天读（09-17 approved·brain 11:16 交办主责this space）：ts 日窗过滤·与 as_of 同构可叠加 ──
+						//    窗=ts>=day ∧ ts<day+1（ISO 字典序与 +08:00 串天然兼容·与 as_of 三窗同边界判据家族·不另起炉灶）；
+						//    day 模式时间正序（晨→夜·读史叙事序）；旋钮 LEGION_TIMELINE_DAY_OFF 非空即停（fail-closed 显式报停用·非静默）。
+						//    次日边界用 Date.UTC 纯日期算术（无时区依赖）；ASC/DESC 为码面字面量二选一（非用户串拼接·无注入面）。
+						const dayTl = String(args.day || "").trim();
+						if (dayTl && process.env.LEGION_TIMELINE_DAY_OFF)
+							return { error: "day 参数已由 LEGION_TIMELINE_DAY_OFF 停用" };
+						if (
+							dayTl &&
+							!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(dayTl)
+						)
+							return {
+								error:
+									"day 格式非法（YYYY-MM-DD·严格日粒度·同款闸）: " +
+									dayTl.slice(0, 30),
+							};
+						// D-1 修（09-17 独立审计⚠中·真历日回读校验）：形状正则放行 02-30/04-31/平年02-29 等假日期，
+						//    Date.UTC 溢出自动滚动（02-30→03-02）⇒ 日窗静默扩大两日（沙箱实捞 03-01+03-02 硬证据）。
+						//    修法＝回读比对月/日（年不含 0-99 特例：输入恒四位·D-B 订正〔独立审计🟡低〕：四位串数值可 0-9999——
+						//    proleptic 闰 0000-02-29 误拒为唯一边界实例·零实际流量〔库 ts 全 2025-2026〕·不另设闸）。
+						if (dayTl) {
+							const _dChk = new Date(
+								Date.UTC(
+									Number(dayTl.slice(0, 4)),
+									Number(dayTl.slice(5, 7)) - 1,
+									Number(dayTl.slice(8, 10)),
+								),
+							);
+							if (
+								_dChk.getUTCDate() !== Number(dayTl.slice(8, 10)) ||
+								_dChk.getUTCMonth() + 1 !== Number(dayTl.slice(5, 7))
+							)
+								return {
+									error:
+										"day 非真历日（YYYY-MM-DD 须为真实存在日期）: " +
+										dayTl.slice(0, 30),
+								};
+						}
+						const dayNext = dayTl
+							? new Date(
+									Date.UTC(
+										Number(dayTl.slice(0, 4)),
+										Number(dayTl.slice(5, 7)) - 1,
+										Number(dayTl.slice(8, 10)) + 1,
+									),
+								)
+									.toISOString()
+									.slice(0, 10)
+							: "";
+						const dayWin = dayTl ? " AND ts >= ? AND ts < ?" : "";
+						const dayWinArgs = dayTl ? [dayTl, dayNext] : [];
+						const tlOrder = dayTl
+							? " ORDER BY COALESCE(event_at, ts) ASC, id ASC LIMIT ?"
+							: " ORDER BY COALESCE(event_at, ts) DESC, id DESC LIMIT ?";
 						let rows;
 						if (args.space) {
 							rows = db
 								.prepare(
 									"SELECT * FROM memories WHERE status = 'active' AND space = ?" +
 										tlWin +
-										" ORDER BY COALESCE(event_at, ts) DESC, id DESC LIMIT ?",
+										dayWin +
+										tlOrder,
 								)
-								.all(String(args.space), ...tlWinArgs, limit); // D3 审计修（18:57）：id 序被镜像 440 条霸屏——真时间序（镜像老 ts 沉底·事件钟优先）
+								.all(String(args.space), ...tlWinArgs, ...dayWinArgs, limit); // D3 审计修（18:57）：id 序被镜像 440 条霸屏——真时间序（镜像老 ts 沉底·事件钟优先）
 						} else {
 							rows = db
 								.prepare(
 									"SELECT * FROM memories WHERE status = 'active'" +
 										tlWin +
-										" ORDER BY COALESCE(event_at, ts) DESC, id DESC LIMIT ?",
+										dayWin +
+										tlOrder,
 								)
-								.all(...tlWinArgs, limit); // D3 同修
+								.all(...tlWinArgs, ...dayWinArgs, limit); // D3 同修
 						}
 						const total = db
 							.prepare(
 								"SELECT COUNT(*) AS c FROM memories WHERE status = 'active'" +
-									tlWin,
+									tlWin +
+									dayWin,
 							)
-							.get(...tlWinArgs);
+							.get(...tlWinArgs, ...dayWinArgs);
 						return {
 							entries: rows.map((r) => ({
 								id: r.id,
@@ -11349,6 +11461,7 @@ print(json.dumps({'frames': len(frames), 'window': [lo, hi], 'anchorHit': anchor
 							})),
 							total: Number(total.c),
 							...(asOfTl ? { asOf: asOfTl } : {}),
+							...(dayTl ? { day: dayTl } : {}),
 						};
 					}
 					if (action === "stats") {
