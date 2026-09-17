@@ -158,7 +158,7 @@ leak the secret.
 Raw episode replay shells out to the system `python3` (present on macOS by default). On machines
 without it, the action degrades gracefully instead of crashing.
 
-## Configuration reference (0.2.1)
+## Configuration reference (0.2.7)
 
 Everything is environment-variable driven — no config file required. All knobs live under the
 `LEGION_` prefix and ship with sane defaults, so **the plugin is fully functional with zero
@@ -175,6 +175,8 @@ configuration**. Set a variable only when you actually want to change that behav
 | `LEGION_RERANK_CAND` | `50` | Candidate pool size handed to the reranker. |
 | `LEGION_EXTRACT_TIMEOUT_MS` | `120000` | Per-request timeout for the extraction call (added in 0.1.5 — bounds the global extraction lock). |
 | `LEGION_INSTRUCT_TEXT` | *(built-in)* | Override the instruction sent with query-side embeddings. |
+| `LEGION_VEC_ON` | *(off)* | Vector channel master switch: unset = fully off (zero embedding calls), `query` = query-side only, `1` = query + write-time embedding + nightly backfill. |
+| `LEGION_VEC_BF_BUDGET` | `600` | Per-patrol backfill budget for embedding entries that predate the vector channel (0–2000; `0` = explicitly off). |
 
 ### Feature switches — set to `1` to disable
 
@@ -212,6 +214,7 @@ a minimal setup:
 | `LEGION_USAGE_WEEKLY_OFF` | Weekly usage summary generation. |
 | `LEGION_DECAY_LEGACY` | Set to `1` to revert to the single-tier decay curve. |
 | `LEGION_SPACEGATE_OFF` | The per-space write gate (mainly for test rigs). |
+| `LEGION_TIMELINE_DAY_OFF` | The `timeline day` parameter (per-day reading); with this set, `day` is rejected with an explicit message. |
 
 ### Debug & maintenance
 
@@ -219,6 +222,7 @@ a minimal setup:
 | --- | --- |
 | `LEGION_INJECT_PROBE` | Set to `1` to log every assembled injection to `/tmp/inject-probe.log` (zero overhead when off). |
 | `LEGION_DRILL_PATROL` | Set to `1` to force one full nightly-patrol run immediately on load (drill/testing only). |
+| `LEGION_SEARCH_PROF_ON` | Set to `1` to log one `search-prof` line per search with per-segment timings (FTS/co-occurrence+PPR/entity-hop/generalization/assembly; zero overhead when off). |
 
 ### Paths & data files
 
