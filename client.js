@@ -284,7 +284,12 @@ window.__ModuleLoader__.load({
 														: "inherit",
 										},
 									},
-									r.pressurePct === null ? "—" : r.pressurePct + "%",
+									r.pressurePct === null
+										? "—"
+										: r.pressurePct +
+												"%" +
+												(r.pressureFloor ? "⌊" : "") +
+												(r.legacyWindow ? "†" : ""), // 批⑰ B8b（09-21·J5-1）：两信号位消费——⌊=下限（pressure 缺失·假零兜底）†=老分母（262144 型·与现役 1M 不可比）
 								),
 							),
 						),
@@ -293,7 +298,7 @@ window.__ModuleLoader__.load({
 				react.createElement(
 					"p",
 					{ style: { opacity: 0.5, marginTop: "8px" } },
-					"压力>70% 红·>50% 橙（组织学：>70% 建议换窗）· 30s 自动刷新 · 按最近活跃排序（新窗口跑完首轮即上镜）",
+					"压力>70% 红·>50% 橙（组织学：>70% 建议换窗）·⌊=下限值（pressure 缺失）·†=老分母窗（与现役 1M 不可比）· 30s 自动刷新 · 按最近活跃排序（新窗口跑完首轮即上镜）",
 				),
 			);
 		}
