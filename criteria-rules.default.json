@@ -1,9 +1,38 @@
 {
-  "_comment": "Behaviour criteria for dsh-living-memory — the public counterpart of the author's own word list.\nLoad order: (1) ~/.dsh/dsh-living-memory/criteria-rules.json  (2) this file  (3) the CRIT_FLOOR built into index.cjs.\nSemantics: PER KEY — the first readable layer that provides a key wins for that key; the built-in floor only\nfills keys no layer provided. The floor is NOT appended: these are behaviour criteria, not security rules —\nit keeps a feature usable, it does not keep a defence unbreakable. Override the first path with\nLEGION_CRITERIA_RULES_PATH (handy for drills and sandboxes).\nFields: { re: regex source string, flags: JS regex flags }.\n\nWhy the words differ from the author's own list: that list doubles as an internal taxonomy (ruling /\npending-approval / field-report vocabulary and so on). This file keeps the BEHAVIOUR and drops the\ntaxonomy — generic wording a user may actually type is kept, site-specific terms are replaced by their\npublic counterparts. Add your own domain words here (or in the user file); never patch index.cjs.\n\nKeys: metaExclusion (entries ABOUT facts are not evidence of facts) | intentGate (a short query that\nstill carries intent) | stashHint (a todo that looks like an open item) | taskCompleted (a tool call\narguing a task finished) | recallStopwords (filler words stripped before judging title recallability) |\ninboxPath (a path that reads as an inbox) | exemptShort (one-word acknowledgements are not real turns) |\nalertFamily (title-prefix families filed once per family) | sysAutoPrefix (fully automatic entries, whose\nmutual collisions are exempt from conflict filing).\n\nDisclosures kept HERE on purpose (the maintenance `_note` fields never ship, so anything that must be\nreadable in the package belongs in this comment):\n  - alertFamily: the author's third branch is deliberately TRIMMED in the public build. It belongs to a\n    patrol stage this package does not ship, so the branch would be permanently false; two branches ship.\n  - opsHook / sentryCritical (added 2026-09-12): both are behaviour criteria that used to live as source\n    literals. Their public word lists are public counterparts (not translations of the author's internal\n    vocabulary); the author's own list is kept on the author's side. Put your own domain words in the\n    user-level file rather than editing index.cjs.\n  - coverage ledger (2026-09-12): 11 criteria keys are externalised here. Four further behaviour regexes\n    are deliberately REMOVED / TRIMMED / INERT in the public build rather than externalised (route words\n    for the author's own workspaces, and a legacy-path sentinel whose pattern is inert here). Earlier\n    release notes credited a single figure of 9 occurrences as the whole criterion surface; that\n    accounting is superseded by this ledger.",
+  "_comment": "Behaviour criteria for dsh-living-memory — the public counterpart of the author's own word list.\nLoad order: (1) ~/.dsh/dsh-living-memory/criteria-rules.json  (2) this file  (3) the CRIT_FLOOR built into core.cjs.\nSemantics: PER KEY — the first readable layer that provides a key wins for that key; the built-in floor only\nfills keys no layer provided. The floor is NOT appended: these are behaviour criteria, not security rules —\nit keeps a feature usable, it does not keep a defence unbreakable. Override the first path with\nLEGION_CRITERIA_RULES_PATH (handy for drills and sandboxes).\nFields: { re: regex source string, flags: JS regex flags }.\n\nWhy the words differ from the author's own list: that list doubles as an internal taxonomy (ruling /\npending-approval / field-report vocabulary and so on). This file keeps the BEHAVIOUR and drops the\ntaxonomy — generic wording a user may actually type is kept, site-specific terms are replaced by their\npublic counterparts. Add your own domain words here (or in the user file); never patch index.cjs.\n\nKeys: metaExclusion (entries ABOUT facts are not evidence of facts) | intentGate (a short query that\nstill carries intent) | stashHint (a todo that looks like an open item) | taskCompleted (a tool call\narguing a task finished) | recallStopwords (filler words stripped before judging title recallability) |\ninboxPath (a path that reads as an inbox) | exemptShort (one-word acknowledgements are not real turns) |\nalertFamily (title-prefix families filed once per family) | sysAutoPrefix (fully automatic entries, whose\nmutual collisions are exempt from conflict filing).\n\nDisclosures kept HERE on purpose (the maintenance `_note` fields never ship, so anything that must be\nreadable in the package belongs in this comment):\n  - alertFamily: the author's third branch is deliberately TRIMMED in the public build. It belongs to a\n    patrol stage this package does not ship, so the branch would be permanently false; two branches ship.\n  - opsHook / sentryCritical (added 2026-09-12): both are behaviour criteria that used to live as source\n    literals. Their public word lists are public counterparts (not translations of the author's internal\n    vocabulary); the author's own list is kept on the author's side. Put your own domain words in the\n    user-level file rather than editing index.cjs.\n  - coverage ledger (2026-09-12): 29 criteria keys are externalised here. Four further behaviour regexes\n    are deliberately REMOVED / TRIMMED / INERT in the public build rather than externalised (route words\n    for the author's own workspaces, and a legacy-path sentinel whose pattern is inert here). Earlier\n    release notes credited a single figure of 9 occurrences as the whole criterion surface; that\n    accounting is superseded by this ledger.",
   "alertFamily": {
     "re": "^(handover note警报|记忆链路light sentry警报)",
     "flags": ""
   },
+  "askGateAsk": {
+    "re": "(?:请|烦请|麻烦|劳烦|需要|还需|需)您[^。！？\\n]{0,8}?(?:提供|给(?:我|出)|发(?:我|来|一下)|告(?:诉|知)|补(?:充|给|一下)|上传|贴(?:出|一下)|报(?:一下|给我))|您(?:能否|可否|方便)[^。！？\\n]{0,6}?(?:提供|给|发|告诉|补|上传)",
+    "flags": ""
+  },
+  "askGateGap": {
+    "re": "^[候待]|候您|待您|未回|缺口|仅缺|还缺",
+    "flags": ""
+  },
+  "askGatePtr": {
+    "re": "指针|落点|锚点|核验件|交接件",
+    "flags": ""
+  },
+  "askGateSkip": {
+    "re": "裁|批|定夺|拍板|点头|选哪|同意|授权",
+    "flags": ""
+  },
+  "askGateStop": {
+    "re": "^(?:您|提供|一下|信息|资料|需要|请|烦请|麻烦|劳烦|您|还需|告诉|告知|补充|上传|发来|给我|方便|能否|可否|还缺|仅缺|尚缺|就差|候您|待您|确认|一个|这个|那个|我们|你们|已经)$",
+    "flags": "i"
+  },
+  "askGateSyn": {
+    "re": "住址=地址=门牌;进货价=采购价=成本价;重量=克重=称重=裸重;护照=资料页=证件;自拍=视频",
+    "flags": ""
+  },
+  "askGateWait": {
+    "re": "候您(?:提供|给|补|发|回|确认|亲填)?|待您(?:提供|给|补|发|回)|仅缺|还缺|尚缺|就差|(?:\\d+\\s*天)?未回",
+    "flags": ""
+  },
+  "autoWaitBigramJaccardMin": 0.5,
   "closureAnchorStopwords": {
     "re": "^(?:pending|retrospective|acceptance|space|receipt|reconcile|remediation|writeoff|write-off)$",
     "flags": ""
@@ -22,12 +51,32 @@
     "re": "[0-9一二三四五六七八九十]{1,4}\\s*(月|日|号|点|时|次|条|个|d|h|分)|最近|今天|昨天|上周|上月|之前|之前那|上次|昨天那|刚才|进度|状态|报(告|表)|怎么|如何|什么|哪|谁|是否|还|继续|接(手|续|令|着)|查|找|搜|看|列|盘|总|结|汇|对比|差异|回(顾|顾下|执)|复(盘|跑|核)|待办|进行|在办|完成|毕|验收|呈|批|裁|令|案|车|窗|库|表|面板|通道|插件|模型|参数|配置|路径|版本|行号|文件|目录|备份|快照|回归|演练|审计|nightly patrol|living memory|记忆|检索|注入|提炼|写入|召回|分词|词表|权限|红线|hard rule|纪律|space|模块|工程|施工|重启|挂载|\\b(?:\\d+\\s*(?:d|h|days?|hrs?|hours?|weeks?|months?|times?)|yesterday|today|tomorrow|recently|latest|last\\s+(?:week|month|time|night|session)|ago|when)\\b|\\b(?:status|progress|pending|todo|done|complete[dt]?|finish(?:ed)?|verified?|audit(?:ed)?|review(?:ed)?|recap|summary)\\b|\\b(?:how|what|where|which|who|why|whose|whom)\\b|\\b(?:continue|resume|restart|find|search|look(?:up)?|list|show|check|compare|diff|track)\\b|\\b(?:memory|memories|recall|retriev\\w*|inject\\w*|extract\\w*|index|schema|config\\w*|plugin|model|version|backup|snapshot|patrol|nightly|session|window|panel|channel|permission|threshold)\\b",
     "flags": "i"
   },
+  "lifeMilAnchor": {
+    "re": "军令|命令|指令|批示|裁决",
+    "flags": ""
+  },
+  "lifePtrTitle": {
+    "re": "指针|落点|锚点",
+    "flags": ""
+  },
+  "lifeStateTitle": {
+    "re": "^[候待]|^本窗|^下一步|候您|待您|未回(?![溯抄退滚填写归顾头收])|零新?缺口|缺口(?:已|仍|未|待|尚|全(?:补|闭|治|处置))|仅缺|还缺|尚缺",
+    "flags": ""
+  },
+  "lifeTodoHold": {
+    "re": "呈裁|交办|候.{0,6}裁",
+    "flags": ""
+  },
   "metaExclusion": {
     "re": "盘点|清单|裁处|裁断|pending ruling|裁定|裁决|判定|剩.{0,4}条|field report|汇总|审计|复现|自检|escalate|方案|awaiting approval|草案|todo清理|待办清理|清理需区分|区分.{0,8}(真活|已闭环|被超越)|receipt|notify|交接|追加|log|open item|counter|\\b(?:audit|checklist|inventory|summary|report|review|retrospective|handover|handoff|proposal|pending)\\b",
     "flags": "i"
   },
   "opsHook": {
     "re": "in progress|in-progress|WIP|pending|handover|follow[- ]?up|watching|blocked",
+    "flags": "i"
+  },
+  "pnRescueStop": {
+    "re": "^(?:of|the|to|and|for|with|usd|hkd|cny|rmb|hk|us|kyc|dsh|md|json|txt|log|pdf|png|jpg|http|https|www|com|cjs|js)$",
     "flags": "i"
   },
   "recallStopwords": {
@@ -45,6 +94,10 @@
   },
   "sysAutoPrefix": {
     "re": "^(上下文压缩锚|handover note警报|Auto-Dreamer 语义簇)",
+    "flags": ""
+  },
+  "sysRowTitle": {
+    "re": "^(上下文压缩锚|本窗任务账快照：|压缩总结：)",
     "flags": ""
   },
   "taskCompleted": {

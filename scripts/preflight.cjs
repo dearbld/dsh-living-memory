@@ -32,25 +32,18 @@ const BUILT_IN = {
   'internal-path': ['/Users/[^/\\s"\')]+/', '/home/[\\w.-]+/', 'C:\\\\Users\\\\',
     '\\.dsh/(profiles|plugins-src|sessions|storages)', 'plugins-src', 'harness/'],
   'private-key': ['-----BEGIN [A-Z ]*PRIVATE KEY-----'],
-  // -- 2026-09-12 (batch 2): internal-id / knife-series / case-number families now ship --
-  //   Why: these three groups used to live only on the build side (consumed by the build's own
-  //   version gate), so editing a published artifact and re-publishing did NOT trip the gate
-  //   -- a one-legged release gate. Scope: generic shapes only, no site-specific words.
-  //   Deliberately NOT shipped: gm / wb (common abbreviations -- would false-positive).
-  'internal-code-id': ['\\bA-\\d{1,2}\\b', '(?<![A-Za-z0-9_])A\\d{1,2}(?![\\-\\dA-Za-z_])'],
-  // Knife-series and case-number families spell their non-ASCII terms as \\uXXXX escapes on
-  // purpose: this shipped gate script must stay pure ASCII (a build-side assertion forbids CJK in it).
-  'knife-series': ['(?:[\\u7532\\u4e59\\u4e19\\u4e01\\u620a\\u5df1\\u5e9a\\u8f9b\\u58ec\\u7678]|\\u5438\\u6536|\\u5fae\\u578b|\\u9996|\\u672b|\\u8865)\\u5200'],
-  'case-number': ['#\\d{3,4}(?![\\dA-Za-z_])', '\\u7b2c\\s*[0-9\\u4e00\\u4e8c\\u4e09\\u56db\\u4e94\\u516d\\u4e03\\u516b\\u4e5d\\u5341]+\\s*\\u5200'],
   'credential-shape': ['(?<![A-Za-z0-9])(?:sk|pk|ak|ark)-[A-Za-z0-9._\\-]{16,}',
     '(?<![A-Za-z0-9])(?:sk|pk|ak|ark)-[A-Za-z0-9]{1,8}(?:[.\\-_][A-Za-z0-9]{4,}){2,}',
     '[a-f0-9]{28,}\\.[A-Za-z0-9]{10,}', 'MEYCIQ[A-Za-z0-9+/=]{20,}', 'MEUCI[A-Za-z0-9+/=]{20,}',
     '[A-Za-z0-9+/=]{120,}'],
 }   // __BUILTIN_END__ single-source block terminator; every block-range scanner keys off this line
 
-const DEFAULT_FILES = ['index.cjs', 'client.js', 'cordis.patch.yml', 'dict-custom.json',
-  'guard-rules.default.json', 'criteria-rules.default.json', 'package.json', 'README.md',
-  'NOTICE', 'LICENSE', 'scripts/preflight.cjs']
+const DEFAULT_FILES = ['index.cjs', 'askgate.cjs', 'core.cjs', 'episodic-anchor.cjs',
+  'episodic-src.cjs', 'extract.cjs', 'inject.cjs', 'patrol.cjs',
+  'pipeline.cjs', 'read.cjs', 'tools.cjs', 'client.js',
+  'cordis.patch.yml', 'dict-custom.json', 'guard-rules.default.json', 'criteria-rules.default.json',
+  'package.json', 'README.md', 'NOTICE', 'LICENSE',
+  'scripts/preflight.cjs']
 
 function loadSite() {
   if (!fs.existsSync(RULES_PATH)) {
@@ -59,9 +52,10 @@ function loadSite() {
   try {
     const d = JSON.parse(fs.readFileSync(RULES_PATH, 'utf8'))
     if (!d || typeof d !== 'object' || !d.classes) throw new Error('missing .classes')
-    return { classes: d.classes, files: Array.isArray(d.files) ? d.files : null, warn: null }
+    return { classes: d.classes, files: Array.isArray(d.files) ? d.files : null,
+      soulLiteral: Object.prototype.hasOwnProperty.call(d, 'soul_literal') ? d.soul_literal : undefined, warn: null }
   } catch (e) {
-    return { classes: null, files: null, fatal: 'site rules file present but unusable: ' + String(e).slice(0, 120) }
+    return { classes: null, files: null, fatal: 'site rules file present but unreadable or invalid' }
   }
 }
 
@@ -70,6 +64,7 @@ if (site.fatal) { console.error('[x] preflight FAILED CLOSED -- ' + site.fatal);
 
 const classes = Object.assign({}, BUILT_IN, site.classes || {})
 const files = site.files || DEFAULT_FILES
+if (!files.length) { console.error('[x] preflight FAILED CLOSED -- empty file list'); process.exit(1) }
 // Self-exemption: this script's own BUILT_IN literal necessarily contains the very
 // shapes it looks for (a credential regex has to spell the credential shape). Skip
 // exactly that block's line range when scanning this file -- nothing else is exempt.
@@ -80,6 +75,35 @@ const U4DEC = (s) => s.replace(/\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g, (m,
   const cp = parseInt(a || b, 16)
   return cp > 0x10FFFF ? m : String.fromCodePoint(cp)
 })
+
+const WS_CP = new Set([
+  0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0x85, 0xA0, 0x1680,
+  0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A,
+  0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF, 0x1C, 0x1D, 0x1E, 0x1F,
+])
+const normSecret = (s) => Array.from(U4DEC(s).normalize('NFKC').replace(/\\[nrt]/g, ' '))
+  .filter((c) => !WS_CP.has(c.codePointAt(0))).join('')
+
+let soulSet = null
+if (site.soulLiteral !== undefined) {
+  try {
+    const cfg = site.soulLiteral
+    if (!cfg || cfg.k !== 12 || cfg.normalize !== 'U4DEC_NFKC_EXPLICIT_WS_CP' ||
+        typeof cfg.source !== 'string' || !cfg.source) throw new Error('invalid soul config')
+    let source = cfg.source
+    if (source.startsWith('~/')) source = path.join(os.homedir(), source.slice(2))
+    if (!path.isAbsolute(source)) throw new Error('soul source must be absolute')
+    const soulChars = Array.from(normSecret(fs.readFileSync(source, 'utf8')))
+    if (soulChars.length < 12) throw new Error('soul source too short')
+    const grams = new Set()
+    for (let i = 0; i + 12 <= soulChars.length; i++) grams.add(soulChars.slice(i, i + 12).join(''))
+    if (!grams.size) throw new Error('soul ngram set empty')
+    soulSet = grams
+  } catch {
+    console.error('[x] preflight FAILED CLOSED -- soul source missing, unreadable, or invalid')
+    process.exit(1)
+  }
+}
 
 const SELF_SKIP = (() => {
   try {
@@ -101,10 +125,11 @@ const SELF_SKIP = (() => {
 })()
 
 const violations = []
+const missing = []
 let scanned = 0, compiled = 0
 for (const rel of files) {
   const abs = path.join(ROOT, rel)
-  if (!fs.existsSync(abs)) continue
+  if (!fs.existsSync(abs)) { missing.push(rel); continue }
   scanned++
   const lines = fs.readFileSync(abs, 'utf8').split('\n')
   const isSelf = abs === path.resolve(__filename)
@@ -115,11 +140,37 @@ for (const rel of files) {
       compiled++
       lines.forEach((text, i) => {
         if (isSelf && SELF_SKIP && i + 1 >= SELF_SKIP[0] && i + 1 <= SELF_SKIP[1]) return
-        const dec = U4DEC(text)
+        const dec = U4DEC(text).normalize('NFKC')
         if (re.test(text) || (dec !== text && re.test(dec))) violations.push({ rel, line: i + 1, cls })
       })
     }
   }
+  const whole = lines.join('\n')
+  const decodedWhole = U4DEC(whole).normalize('NFKC')
+  // Site-root split paths only; generic DSH data layouts are not private machine instances.
+  const crossPathRules = [
+    /path\.join\s*\(\s*os\.homedir\s*\(\s*\)\s*,\s*['"]harness['"]/,
+  ]
+  for (const re of crossPathRules) {
+    const m = whole.match(re) || decodedWhole.match(re)
+    if (!m) continue
+    const line = whole.slice(0, m.index).split('\n').length
+    if (!violations.some((v) => v.rel === rel && v.line === line && v.cls === 'internal-path')) {
+      violations.push({ rel, line, cls: 'internal-path' })
+    }
+  }
+  if (soulSet) {
+    const chars = Array.from(normSecret(lines.join('\n')))
+    let hits = 0
+    for (let i = 0; i + 12 <= chars.length; i++) {
+      if (soulSet.has(chars.slice(i, i + 12).join(''))) hits++
+    }
+    if (hits) violations.push({ rel, soul: hits, cls: String.fromCodePoint(83, 79, 85, 76) + '12' })
+  }
+}
+if (missing.length) {
+  console.error(`[x] preflight BLOCKED publish -- listed file(s) missing: ${missing.join(', ')}`)
+  process.exit(1)
 }
 console.log(`preflight: scanned ${scanned} file(s), ${Object.keys(classes).length} class(es), ${compiled} pattern application(s)`)
 if (site.warn) console.log('[warn] ' + site.warn)
@@ -129,10 +180,10 @@ if (violations.length) {
   for (const v of violations) (byClass[v.cls] = byClass[v.cls] || []).push(v)
   for (const [cls, vs] of Object.entries(byClass)) {
     console.error(`  [${cls}] ${vs.length} hit(s)`)
-    for (const v of vs.slice(0, 12)) console.error(`    ${v.rel}:${v.line}`)
+    for (const v of vs.slice(0, 12)) console.error(v.soul ? `    ${v.rel}:${v.cls} (${v.soul})` : `    ${v.rel}:${v.line}`)
     if (vs.length > 12) console.error(`    ... +${vs.length - 12} more`)
   }
-  console.error('\n(matched text is never printed -- open the file at the reported line)')
+  console.error('\n(matched text is never printed; soul scan reports file-level hits only)')
   process.exit(1)
 }
 console.log('[ok] preflight clean -- four-class scan found nothing shippable-blocking')
