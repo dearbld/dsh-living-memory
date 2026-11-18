@@ -43,5 +43,7 @@ the following open-source projects:
   local-first nightly consolidation pass (dedupe / high-similarity merge /
   todo decay), reimplemented locally on SQLite without external services.
 
-All memory data stays on your machine. This package sends nothing anywhere
-unless you explicitly configure an embedding endpoint.
+Memory is stored locally, but configured model and reranking services can receive
+conversation, query or memory text. Embedding services can also receive queries or
+memory text when their respective paths are enabled. Review the README and your
+provider settings before use; local storage does not guarantee offline processing.

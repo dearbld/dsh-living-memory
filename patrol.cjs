@@ -134,6 +134,64 @@ const {
 // deps 全 const/fn 直传（无 let 重赋值型——零 getter 零回调·#31831 边界核对毕）；调用点 setInterval/LEGION_DRILL_PATROL 在 index.cjs 装配区。
 // [拆⑦·2026-10-04] 闸归一接入：nightly patrol 4 写入点过安检闸（pipeline.securityGate——判据 core 原语零新·原零安检的真增量·蓝图 §6.2）。
 const _pipelineGate = require("./pipeline.cjs").securityGate;
+
+// Keep the patrol synchronous: the child awaits node:sqlite's asynchronous backup
+// before returning. No shell or sqlite3 CLI is involved, and the source is read-only.
+const SNAPSHOT_CHILD = `
+const { DatabaseSync, backup } = require('node:sqlite');
+if (typeof backup !== 'function') {
+  console.error('SQLite online backup is unavailable in this Node.js runtime (requires Node 22.16+ or 23.8+)');
+  process.exit(1);
+}
+(async () => {
+  const source = new DatabaseSync(process.argv[1], { readOnly: true });
+  try { await backup(source, process.argv[2]); }
+  finally { source.close(); }
+  // Publish a standalone rollback-journal database, not a WAL-mode file.
+  const result = new DatabaseSync(process.argv[2]);
+  try {
+    if (result.prepare('PRAGMA journal_mode=DELETE').get().journal_mode !== 'delete')
+      throw new Error('Cannot finalize snapshot journal mode');
+    const check = result.prepare('PRAGMA quick_check').all();
+    if (check.length !== 1 || check[0].quick_check !== 'ok')
+      throw new Error('Snapshot quick_check failed: ' + JSON.stringify(check).slice(0, 300));
+  } finally { result.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+`;
+function createSnapshot(sourcePath, snapshotDir, dayStamp, keepDays) {
+	if (!/^\d{8}$/.test(dayStamp)) throw new Error("Invalid snapshot date");
+	fs2.mkdirSync(snapshotDir, { recursive: true });
+	const dest = path.join(snapshotDir, `memory-${dayStamp}.sqlite3`);
+	// A private, same-filesystem destination makes rename atomic and avoids
+	// concurrent patrols sharing a partially written file.
+	const temporaryDir = fs2.mkdtempSync(path.join(snapshotDir, ".snapshot-"));
+	try {
+		const temporary = path.join(temporaryDir, "memory.sqlite3");
+		execFileSync(process.execPath, ["-e", SNAPSHOT_CHILD, sourcePath, temporary], {
+			timeout: 60000,
+			stdio: "pipe",
+		});
+		// Never replace a WAL-mode snapshot while its sidecars may contain data.
+		if (fs2.existsSync(dest + "-wal") || fs2.existsSync(dest + "-shm"))
+			throw new Error("Existing snapshot has SQLite WAL sidecars; refusing replacement");
+		fs2.renameSync(temporary, dest);
+	} finally {
+		try { fs2.rmSync(temporaryDir, { recursive: true, force: true }); } catch {}
+	}
+	// Rotate only after the new snapshot has been published successfully.
+	const cutoff = Date.now() - keepDays * 24 * 3600 * 1000;
+	for (const name of fs2.readdirSync(snapshotDir)) {
+		const m = name.match(/^memory-(\d{8})\.sqlite3$/);
+		if (!m || name === path.basename(dest)) continue;
+		const t = Date.parse(`${m[1].slice(0, 4)}-${m[1].slice(4, 6)}-${m[1].slice(6, 8)}T00:00:00+08:00`);
+		if (!isNaN(t) && t < cutoff) {
+			const old = path.join(snapshotDir, name);
+			if (fs2.existsSync(old + "-wal") || fs2.existsSync(old + "-shm")) continue;
+			try { fs2.unlinkSync(old); } catch {}
+		}
+	}
+	return dest;
+}
 // wave 车二-8b：续期记账表 life_renew（首次写 old_valid_to、再续只加 n、改 last_at）。
 //   盲审处置（should，10-18）：加 hits 列——上次续期后nightly patrol命中结算到的真命中数（read_episodic 回流同计），每次续期清零；
 //   同一条续满 LIFE_RENEW_CAP 次后，除 essential 外再续须 hits>0（理由记 hit），否则不续、计 lifeRenewCapped。
@@ -3326,35 +3384,16 @@ function setupPatrol({ ctx, stats, db, credentials, pendingBySid, guard, preguar
 					);
 			} catch {}
 
-			// ── step：nightly patrol末尾在线备份（sqlite3 .backup，禁文件 cp——WAL 未 checkpoint 数据会丢）──
-			//    备份源 = 本实例主库路径（生产=正库；沙箱演练=沙箱库，绝不触碰正库）。保留最近 7 天。
+			// ── 在线备份：包含 WAL 中已提交的数据；成功发布后才轮转旧快照。 ──
+			let snapshotSucceeded = false;
 			try {
-				const dayStamp = dayKey.replaceAll("-", "");
-				fs2.mkdirSync(SNAPSHOT_DIR, { recursive: true });
-				const dest = path.join(SNAPSHOT_DIR, `memory-${dayStamp}.sqlite3`);
-				// #22820 承接·maintainer 10-01 令「发车」：CLI 默认以**读写模式**开正库 ⇒ 补 `-readonly` 旗，
-				//   把「不写正库」由语义保证升为**权限位**保证（I-2 同形；budao-drill 09-27 实勘：`-readonly` 下 `.backup` 兼容·源库仅需读权限）。
-				execFileSync("sqlite3", ["-readonly", DB_PATH, `.backup ${dest}`], {
-					timeout: 60000,
-				});
-				// 7 天轮转：删除超期快照
-				const cutoff = Date.now() - SNAPSHOT_KEEP_DAYS * 24 * 3600 * 1000;
-				for (const name of fs2.readdirSync(SNAPSHOT_DIR)) {
-					const m = name.match(/^memory-(\d{8})\.sqlite3$/);
-					if (!m) continue;
-					const t = Date.parse(
-						`${m[1].slice(0, 4)}-${m[1].slice(4, 6)}-${m[1].slice(6, 8)}T00:00:00+08:00`,
-					);
-					if (!isNaN(t) && t < cutoff) {
-						try {
-							fs2.unlinkSync(path.join(SNAPSHOT_DIR, name));
-						} catch {}
-					}
-				}
+				const dest = createSnapshot(DB_PATH, SNAPSHOT_DIR, dayKey.replaceAll("-", ""), SNAPSHOT_KEEP_DAYS);
+				snapshotSucceeded = true;
 				ctx.logger?.info?.(`[living-memory] snapshot ok: ${dest}`);
 			} catch (error) {
+				const detail = String(error?.stderr || "").trim() || String(error);
 				ctx.logger?.warn?.(
-					`[living-memory] snapshot failed: ${String(error).slice(0, 80)}`,
+					`[living-memory] snapshot failed: ${error?.code ? error.code + ": " : ""}${detail.slice(-500)}`,
 				);
 			}
 
@@ -3383,7 +3422,7 @@ function setupPatrol({ ctx, stats, db, credentials, pendingBySid, guard, preguar
 					SNAPSHOT_DIR,
 					`memory-${dayKey.replaceAll("-", "")}.sqlite3`,
 				);
-				const snapOk = fs2.existsSync(snapToday);
+				const snapOk = snapshotSucceeded && fs2.existsSync(snapToday);
 				const verdict = tmMounted && tmIncluded && snapOk ? "ok" : "FAIL";
 				db.prepare(
 					"INSERT OR REPLACE INTO organ_meta (k, v) VALUES ('backup_tri', ?)",
@@ -3935,4 +3974,4 @@ function setupPatrol({ ctx, stats, db, credentials, pendingBySid, guard, preguar
 	return { nightPatrol };
 }
 
-module.exports = { setupPatrol, ensureLifeRenew, ensureLifeRevive }; // wave 阶段 4：两表建表句供 tools.cjs 手工改期／复活借用（只此一处建表）
+module.exports = { setupPatrol, ensureLifeRenew, ensureLifeRevive, createSnapshot }; // wave 阶段 4：两表建表句供 tools.cjs 手工改期／复活借用（只此一处建表）

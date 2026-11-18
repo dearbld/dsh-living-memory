@@ -12,8 +12,7 @@ SQLite knowledge base — then actively *tended*: deduplicated, merged, decayed,
 graph, and patrolled every night. Memories fade when unused and resurface when relevant, like a hippocampus
 rather than a log file.
 
-**Everything is local.** One SQLite file. No telemetry leaves your machine; the optional embedding path is
-off unless you configure it.
+**Local storage does not mean offline processing.** The SQLite database is stored locally, but, when configured and triggered, extraction, spoken-prefix generation and conflict pre-classification can send conversation or memory text to model providers. Online reranking can send a search query and candidate memory text to its provider independently of the vector switch. Embedding calls can send queries or memory text when the vector channel or separate backfill paths are enabled. Review provider settings, credentials and your data policy before use; output filtering is not a guarantee that request input is redacted.
 
 ---
 
@@ -51,7 +50,7 @@ the plugin never hard-fails on a missing optional dependency.
 
 | | dsh-living-memory | mem0 | Zep | Letta | graph-memory |
 | --- | --- | --- | --- | --- | --- |
-| Fully local, single SQLite file | ✅ | partial | ❌ | ❌ | ✅ |
+| Local SQLite storage (model services may be remote) | ✅ | partial | ❌ | ❌ | ✅ |
 | Self-tending nightly patrol | ✅ | ✅ (cloud) | ✅ | ❌ | ❌ |
 | Temporal decay / reinforcement | ✅ | ❌ | ✅ | ❌ | ❌ |
 | Knowledge graph + PPR | ✅ | ❌ | ✅ | ❌ | ✅ |
@@ -61,6 +60,15 @@ the plugin never hard-fails on a missing optional dependency.
 | Designed for DeepSeek Harness | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 ## Quick start
+
+Requires Node.js 22.16 or later in the 22.x line, or Node.js 23.8 or later. The plugin uses
+`node:sqlite` for storage and online snapshots. Snapshot creation runs synchronously with a
+60-second timeout; its scheduling still requires the process to be running in the 02:00–06:00
+Asia/Shanghai patrol window. Missed windows are not automatically replayed. Snapshot failures
+are logged, and users should independently verify backups. Avoid running concurrent patrols against
+the same snapshot directory: the current implementation does not serialize snapshot publication.
+Windows snapshot behavior has not yet been verified. The Time Machine checks in the backup status
+are macOS-specific and can report `FAIL` on other platforms even if a snapshot succeeds.
 
 ```bash
 dsh plugin --profile web add dsh-living-memory
@@ -80,9 +88,13 @@ Data lives in `~/.dsh/dsh-living-memory/` (database + daily snapshots).
 
 ### Optional: enable the vector channel
 
-The vector signal uses a DashScope text-embedding endpoint via the DSH credentials pipe. Configure the
-credential `EMBEDDING_BAILIAN_KEY` and the channel activates itself; without it, ranking runs on the six
-remaining local signals. Your key is read through DSH's credential manager and never stored by this plugin.
+The vector signal uses a DashScope text-embedding endpoint via DSH's credential manager. Configure
+`EMBEDDING_BAILIAN_KEY` and set `LEGION_VEC_ON=query` or `LEGION_VEC_ON=1` to enable query-side
+vector recall. Query mode can also send missing memory chunks for lazy backfill; `1` additionally
+enables write-time embedding and nightly backfill. The separate `LEGION_CHUNK_BACKFILL_ON=1` path
+can make embedding requests independently of `LEGION_VEC_ON`. Online reranking is a separate path
+and can run with the same credential even when vector recall is off; use `LEGION_RERANK_OFF=1`
+to disable it.
 
 ## How the agent uses it (intended workflow)
 
@@ -94,7 +106,10 @@ remaining local signals. Your key is read through DSH's credential manager and n
 ## Project layout
 
 ```
-index.cjs                 host plugin (SQLite schema, recall engine, nightly patrol)
+index.cjs                 host plugin entry point
+core.cjs                  shared storage and retrieval helpers
+read.cjs / extract.cjs    retrieval and extraction
+patrol.cjs                nightly maintenance and snapshots
 client.js                 web-GUI slot (telemetry panels)
 cordis.patch.yml          bundle patch — mounts the host + write roles, zero config
 dict-custom.json          jieba dictionary, layer 1 (generic technical terms)
@@ -129,10 +144,10 @@ Each layer carries three rule groups:
   the `(?<![A-Za-z0-9])` boundary: without it, file names like `…yml.bak-20260827`,
   `task-…` or `disk-…` get caught by the `ak-`/`sk-` substring and the gate starts eating
   legitimate notes.
-- `sensitive` — kept out of auto-extraction and out of the injected recall block, so the
-  automatic layer only ever emits reference-grade facts. The shipped list is generic
-  (`api_key`, `password`, `secret`, `token`, `bearer`, `private_key`, `credential`);
-  add your own policy vocabulary.
+- `sensitive` — filters extracted entries and the injected recall block. Extraction sends the source
+  conversation to the configured model before filtering the model's output; this rule does not guarantee
+  that sensitive input is redacted before transmission. The shipped list is generic (`api_key`,
+  `password`, `secret`, `token`, `bearer`, `private_key`, `credential`); add your own policy vocabulary.
 - `singleBodyWarn` — warn-level wording gate. **Shipped empty, i.e. inert.** The code path
   stays intact, so adding patterns to your own rules file switches it on with no patching.
 
@@ -160,22 +175,22 @@ without it, the action degrades gracefully instead of crashing.
 
 ## Configuration reference (0.2.7)
 
-Everything is environment-variable driven — no config file required. All knobs live under the
-`LEGION_` prefix and ship with sane defaults, so **the plugin is fully functional with zero
-configuration**. Set a variable only when you actually want to change that behavior.
+The following configuration reference originated in 0.2.7; defaults noted below have been checked
+against the current source where indicated. Some features require credentials, external services,
+or additional runtime dependencies. Review the settings before enabling automatic processing.
 
 ### Models & retrieval tuning
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `LEGION_EXTRACT_MODEL` | `deepseek-v4-flash` | Model used for auto-extraction of memories from conversation. |
+| `LEGION_EXTRACT_MODEL` | `deepseek-flash` | Model used for auto-extraction of memories from conversation. |
 | `LEGION_SPOKEN_MODEL` | `deepseek-chat` | Model used to generate colloquial query prefixes (bridges "how users ask" vs "how notes are written"). |
 | `LEGION_RERANK_MODEL` | `gte-rerank-v2` | Online rerank model for precision re-ordering of hybrid results. |
 | `LEGION_RERANK_TOPN` | `20` | How many re-ranked entries feed back into the fused ranking. |
-| `LEGION_RERANK_CAND` | `50` | Candidate pool size handed to the reranker. |
+| `LEGION_RERANK_CAND` | `20` | Candidate pool size handed to the reranker. |
 | `LEGION_EXTRACT_TIMEOUT_MS` | `120000` | Per-request timeout for the extraction call (added in 0.1.5 — bounds the global extraction lock). |
 | `LEGION_INSTRUCT_TEXT` | *(built-in)* | Override the instruction sent with query-side embeddings. |
-| `LEGION_VEC_ON` | *(off)* | Vector channel master switch: unset = fully off (zero embedding calls), `query` = query-side only, `1` = query + write-time embedding + nightly backfill. |
+| `LEGION_VEC_ON` | *(off)* | Vector recall switch: `query` enables query recall and possible lazy chunk backfill; `1` also enables write-time embedding and nightly backfill. A separately enabled chunk backfill can make embedding calls even when this is unset. |
 | `LEGION_VEC_BF_BUDGET` | `600` | Per-patrol backfill budget for embedding entries that predate the vector channel (0–2000; `0` = explicitly off). |
 
 ### Feature switches — set to `1` to disable
@@ -239,9 +254,11 @@ a minimal setup:
 
 Keys are **not** environment variables — they live in the DSH credential manager:
 
-- `DEEPSEEK_MEMORY_KEY` — API key for extraction & spoken-prefix models.
-- `EMBEDDING_BAILIAN_KEY` — API key for the vector + rerank channel (optional; without it the
-  plugin runs on the keyword channel only).
+- `DEEPSEEK_MEMORY_KEY` — default credential for extraction and spoken-prefix models; the
+  conflict pre-classifier also uses it by default. `LEGION_LLM_KEY_REF` and
+  `LEGION_PREVERDICT_KEY_REF` can select other credential references independently.
+- `EMBEDDING_BAILIAN_KEY` — credential used by the vector and online rerank paths. Without it,
+  those paths may fall back; other configured model calls can still run.
 
 ## Contributing
 
@@ -268,7 +285,7 @@ its own name and its own character. Full terms in [NOTICE](./NOTICE).
 每条教训、每个决策都沉淀进本地 SQLite 知识库，并由**夜巡引擎**持续整理——去重、合并、衰减、图谱
 连接。记忆像海马体一样：不用则淡、相关则浮，而非一堆永不变化的日志。
 
-**全本地**：单个 SQLite 文件，不上报任何遥测；向量通道默认关闭，需显式配置才启用。
+**本地存储不等于离线处理**：SQLite 数据库存于本机；满足配置与触发条件时，对话、查询或记忆文本可能发送给模型、精排或嵌入服务。向量检索开关与在线精排、独立分块回填分别控制；使用前请核对服务商、凭据与数据策略。
 
 **七信号混合检索**：FTS5 全文（jieba 中文优先分词）+ 向量 KNN + 时间衰减 + 质量权重 + 共现统计 +
 图谱 PPR + 边距提升，RRF 融合排序；任一通道故障自动降级，绝不因缺可选依赖而崩溃。
@@ -284,7 +301,7 @@ dsh plugin --profile web add dsh-living-memory
 工具随 DSH 重启自动挂载（`memory` 五个只读 action + `memory_write` 写入）。随包的 `cordis.patch.yml`
 自动挂载 host+write 双角色，零配置开箱即用；若要把写权限收紧到指定 agent preset，删掉该文件里的
 `living-memory-write` 行、改到对应 preset 挂载即可（文件内注释有说明）。数据在
-`~/.dsh/dsh-living-memory/`。可选在 DSH 凭据管理器配置 `EMBEDDING_BAILIAN_KEY` 启用向量通道。
+`~/.dsh/dsh-living-memory/`。向量检索须配置凭据并设置 `LEGION_VEC_ON`；在线精排及独立分块回填另行控制，详见上方隐私说明。
 
 许可证：[MIT](./LICENSE)，致谢 [graph-memory](https://github.com/adoresever/graph-memory) 与
 [mem0](https://github.com/mem0ai/mem0) 的设计启发（见 [NOTICE](./NOTICE)）。
