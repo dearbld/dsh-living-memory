@@ -96,7 +96,7 @@ test("refuses replacing an existing snapshot with WAL sidecars", t => {
   assert.deepEqual(fs.readdirSync(snapshots).sort(), ["memory-20991231.sqlite3", "memory-20991231.sqlite3-wal"]);
 });
 
-test("concurrent processes publish complete snapshots without sharing temporary files", async t => {
+test("concurrent processes are serialized by lock; final snapshot is valid", async t => {
   const { source, snapshots } = fixture(t);
   const script = "require(process.argv[1]).createSnapshot(process.argv[2], process.argv[3], '20991231', 7)";
   const run = () => new Promise((resolve, reject) => {
@@ -105,9 +105,12 @@ test("concurrent processes publish complete snapshots without sharing temporary 
     child.on("error", reject);
     child.on("close", code => code === 0 ? resolve() : reject(new Error(errors)));
   });
-  await Promise.all([run(), run()]);
+  const results = await Promise.allSettled([run(), run()]);
+  const succeeded = results.filter(r => r.status === "fulfilled").length;
+  assert.ok(succeeded >= 1, "at least one process must succeed");
+  // The other may fail with lock contention — that is correct serialization.
   assert.deepEqual(readRows(path.join(snapshots, "memory-20991231.sqlite3")), [{ rowid: 97, value: "WAL committed" }]);
-  assert.deepEqual(fs.readdirSync(snapshots), ["memory-20991231.sqlite3"]);
+  assert.equal(fs.existsSync(path.join(snapshots, ".snapshot-lock")), false, "lock cleaned up");
 });
 
 test("backup child timeout preserves the old snapshot", { timeout: 75000 }, t => {
@@ -131,4 +134,27 @@ test("rotation runs only after a successful snapshot", t => {
   fs.writeFileSync(path.join(snapshots, "memory-20000101.sqlite3"), "old backup");
   createSnapshot(source, snapshots, "20991231", 7);
   assert.deepEqual(fs.readdirSync(snapshots), ["memory-20991231.sqlite3"]);
+});
+
+test("fresh lock prevents concurrent snapshot; stale lock is reclaimed", t => {
+  const { source, snapshots } = fixture(t);
+  fs.mkdirSync(snapshots, { recursive: true });
+  const lockDir = path.join(snapshots, ".snapshot-lock");
+  // Fresh lock: should throw
+  fs.mkdirSync(lockDir);
+  assert.throws(() => createSnapshot(source, snapshots, "20991231", 7), /already in progress/);
+  // Stale lock (> 5 min): should reclaim and succeed
+  const past = new Date(Date.now() - 6 * 60 * 1000);
+  fs.utimesSync(lockDir, past, past);
+  const dest = createSnapshot(source, snapshots, "20991231", 7);
+  assert.ok(fs.existsSync(dest));
+  assert.equal(fs.existsSync(lockDir), false, "lock released after completion");
+});
+
+test("lock is released even when snapshot fails", t => {
+  const { root, snapshots } = fixture(t);
+  fs.mkdirSync(snapshots, { recursive: true });
+  const lockDir = path.join(snapshots, ".snapshot-lock");
+  assert.throws(() => createSnapshot(path.join(root, "nonexistent.sqlite3"), snapshots, "20991231", 7));
+  assert.equal(fs.existsSync(lockDir), false, "lock released on failure");
 });

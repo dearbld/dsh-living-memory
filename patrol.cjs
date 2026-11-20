@@ -162,32 +162,55 @@ function createSnapshot(sourcePath, snapshotDir, dayStamp, keepDays) {
 	if (!/^\d{8}$/.test(dayStamp)) throw new Error("Invalid snapshot date");
 	fs2.mkdirSync(snapshotDir, { recursive: true });
 	const dest = path.join(snapshotDir, `memory-${dayStamp}.sqlite3`);
-	// A private, same-filesystem destination makes rename atomic and avoids
-	// concurrent patrols sharing a partially written file.
-	const temporaryDir = fs2.mkdtempSync(path.join(snapshotDir, ".snapshot-"));
+	// Serialize concurrent snapshot attempts: atomic lock dir prevents
+	// a slower reader from overwriting a newer snapshot published first.
+	const lockDir = path.join(snapshotDir, ".snapshot-lock");
+	let lockAcquired = false;
 	try {
-		const temporary = path.join(temporaryDir, "memory.sqlite3");
-		execFileSync(process.execPath, ["-e", SNAPSHOT_CHILD, sourcePath, temporary], {
-			timeout: 60000,
-			stdio: "pipe",
-		});
-		// Never replace a WAL-mode snapshot while its sidecars may contain data.
-		if (fs2.existsSync(dest + "-wal") || fs2.existsSync(dest + "-shm"))
-			throw new Error("Existing snapshot has SQLite WAL sidecars; refusing replacement");
-		fs2.renameSync(temporary, dest);
-	} finally {
-		try { fs2.rmSync(temporaryDir, { recursive: true, force: true }); } catch {}
+		fs2.mkdirSync(lockDir);
+		lockAcquired = true;
+	} catch (e) {
+		if (e.code !== "EEXIST") throw e;
+		// Stale lock (> 5 min) from a crashed process: reclaim.
+		const age = Date.now() - fs2.statSync(lockDir).mtimeMs;
+		if (age > 5 * 60 * 1000) {
+			fs2.rmSync(lockDir, { recursive: true, force: true });
+			fs2.mkdirSync(lockDir);
+			lockAcquired = true;
+		} else {
+			throw new Error("Snapshot already in progress; skipping to avoid overwrite");
+		}
 	}
-	// Rotate only after the new snapshot has been published successfully.
-	const cutoff = Date.now() - keepDays * 24 * 3600 * 1000;
-	for (const name of fs2.readdirSync(snapshotDir)) {
-		const m = name.match(/^memory-(\d{8})\.sqlite3$/);
-		if (!m || name === path.basename(dest)) continue;
-		const t = Date.parse(`${m[1].slice(0, 4)}-${m[1].slice(4, 6)}-${m[1].slice(6, 8)}T00:00:00+08:00`);
-		if (!isNaN(t) && t < cutoff) {
-			const old = path.join(snapshotDir, name);
-			if (fs2.existsSync(old + "-wal") || fs2.existsSync(old + "-shm")) continue;
-			try { fs2.unlinkSync(old); } catch {}
+	try {
+		const temporaryDir = fs2.mkdtempSync(path.join(snapshotDir, ".snapshot-"));
+		try {
+			const temporary = path.join(temporaryDir, "memory.sqlite3");
+			execFileSync(process.execPath, ["-e", SNAPSHOT_CHILD, sourcePath, temporary], {
+				timeout: 60000,
+				stdio: "pipe",
+			});
+			// Never replace a WAL-mode snapshot while its sidecars may contain data.
+			if (fs2.existsSync(dest + "-wal") || fs2.existsSync(dest + "-shm"))
+				throw new Error("Existing snapshot has SQLite WAL sidecars; refusing replacement");
+			fs2.renameSync(temporary, dest);
+		} finally {
+			try { fs2.rmSync(temporaryDir, { recursive: true, force: true }); } catch {}
+		}
+		// Rotate only after the new snapshot has been published successfully.
+		const cutoff = Date.now() - keepDays * 24 * 3600 * 1000;
+		for (const name of fs2.readdirSync(snapshotDir)) {
+			const m = name.match(/^memory-(\d{8})\.sqlite3$/);
+			if (!m || name === path.basename(dest)) continue;
+			const t = Date.parse(`${m[1].slice(0, 4)}-${m[1].slice(4, 6)}-${m[1].slice(6, 8)}T00:00:00+08:00`);
+			if (!isNaN(t) && t < cutoff) {
+				const old = path.join(snapshotDir, name);
+				if (fs2.existsSync(old + "-wal") || fs2.existsSync(old + "-shm")) continue;
+				try { fs2.unlinkSync(old); } catch {}
+			}
+		}
+	} finally {
+		if (lockAcquired) {
+			try { fs2.rmSync(lockDir, { recursive: true, force: true }); } catch {}
 		}
 	}
 	return dest;

@@ -65,8 +65,8 @@ Requires Node.js 22.16 or later in the 22.x line, or Node.js 23.8 or later. The 
 `node:sqlite` for storage and online snapshots. Snapshot creation runs synchronously with a
 60-second timeout; its scheduling still requires the process to be running in the 02:00–06:00
 Asia/Shanghai patrol window. Missed windows are not automatically replayed. Snapshot failures
-are logged, and users should independently verify backups. Avoid running concurrent patrols against
-the same snapshot directory: the current implementation does not serialize snapshot publication.
+are logged, and users should independently verify backups. Concurrent snapshot attempts are
+serialized by a lock; a second attempt while one is in progress will skip rather than overwrite.
 Windows snapshot behavior has not yet been verified. The Time Machine checks in the backup status
 are macOS-specific and can report `FAIL` on other platforms even if a snapshot succeeds.
 
